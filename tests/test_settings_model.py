@@ -16,7 +16,16 @@ from typing import Any
 from pydantic import SecretStr, ValidationError
 
 from app.database import Database
-from app.models import CardSize, DownloadMode, QualityProfile, RemoteKind, Settings, ThemeMode
+from app import windows_user
+from app.models import (
+    CardSize,
+    DownloadMode,
+    QualityProfile,
+    RemoteKind,
+    Settings,
+    ThemeMode,
+    stored_settings,
+)
 
 # Preferences as stored before the Prowlarr / Download Station fields existed.
 OLD_STORED: dict[str, Any] = {
@@ -33,7 +42,7 @@ OLD_STORED: dict[str, Any] = {
 
 class SettingsModelTests(unittest.TestCase):
     def test_old_stored_settings_load_with_new_defaults(self) -> None:
-        settings = Settings.model_validate(json.loads(json.dumps(OLD_STORED)))
+        settings = Settings.model_validate(stored_settings(json.loads(json.dumps(OLD_STORED))))
         self.assertEqual(settings.tmdb_api_key.get_secret_value(), "tmdbkey")
         self.assertEqual(settings.weeks_to_show, 3)
         # The retired "previous weeks" setting is ignored; suggestions are on by default.
@@ -41,7 +50,7 @@ class SettingsModelTests(unittest.TestCase):
         self.assertTrue(settings.show_suggestions)
         self.assertEqual(settings.prowlarr_url, "")
         self.assertEqual(settings.prowlarr_api_key.get_secret_value(), "")
-        self.assertIs(settings.remote_kind, RemoteKind.SYNOLOGY)
+        self.assertIs(settings.remote_kind, RemoteKind.SYNOLOGY)  # its default then
         self.assertFalse(settings.remote_configured)
         self.assertEqual(settings.remote_url, "")
         self.assertEqual(settings.remote_username, "")
@@ -100,6 +109,7 @@ class SettingsModelTests(unittest.TestCase):
                 "opensubtitles_password",
                 "opensubtitles_own_key",
                 "plex_token",  # this PC's own: never in a backup (app/services/backup.py)
+                "plex_server_token",  # a shared or Plex Home server's own token, the same
             },
         )
         settings = Settings(**{name: f"value-{name}" for name in secrets})
@@ -294,6 +304,62 @@ class QualityAndSizeTests(unittest.TestCase):
 
 
 SIZE_FIELDS = ("size_tv_min_gb", "size_tv_max_gb", "size_movie_min_gb", "size_movie_max_gb")
+
+
+class NewSettingsDefaultsTests(unittest.IsolatedAsyncioTestCase):
+    """New settings start at qBittorrent and the Downloads folder where Windows has it; stored
+    ones keep what they have, and a key they lack keeps the meaning it had."""
+
+    async def database(self, stored: dict[str, Any]) -> Database:
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "settings.db"
+        await (await Database.open(path)).close()  # create the schema
+        with contextlib.closing(sqlite3.connect(path)) as raw, raw:
+            raw.executemany(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                [(key, json.dumps(value)) for key, value in stored.items()],
+            )
+        db = await Database.open(path)
+        self.addAsyncCleanup(db.close)
+        return db
+
+    async def test_a_new_install_starts_at_qbittorrent(self) -> None:
+        self.assertIs(Settings().remote_kind, RemoteKind.QBITTORRENT)
+        db = await self.database({})
+        self.assertIs((await db.settings.load()).remote_kind, RemoteKind.QBITTORRENT)
+
+    async def test_stored_settings_without_the_key_keep_synology(self) -> None:
+        db = await self.database(OLD_STORED)
+        loaded = await db.settings.load()
+        self.assertIs(loaded.remote_kind, RemoteKind.SYNOLOGY)
+        await db.settings.save(loaded)  # and from then on it is stored
+        self.assertIs((await db.settings.load()).remote_kind, RemoteKind.SYNOLOGY)
+
+    async def test_a_stored_program_stays(self) -> None:
+        for kind in RemoteKind:
+            with self.subTest(kind=kind):
+                db = await self.database({**OLD_STORED, "remote_kind": kind.value})
+                self.assertIs((await db.settings.load()).remote_kind, kind)
+
+    async def test_download_station_keys_still_move(self) -> None:
+        db = await self.database(DOWNLOAD_STATION_STORED)
+        loaded = await db.settings.load()
+        self.assertIs(loaded.remote_kind, RemoteKind.SYNOLOGY)
+        self.assertEqual(loaded.remote_url, "http://192.168.1.20:5000")
+        self.assertEqual(loaded.remote_password.get_secret_value(), "DSMPASS123")
+
+    async def test_the_downloads_folder_where_windows_has_it(self) -> None:
+        moved = r"D:\Users\Alex\Downloads"
+        original = windows_user._known_downloads
+        windows_user._known_downloads = lambda: moved
+        self.addCleanup(setattr, windows_user, "_known_downloads", original)
+        self.assertEqual(Settings().download_dir, Path(moved))
+        new_install = await self.database({})
+        self.assertEqual((await new_install.settings.load()).download_dir, Path(moved))
+        # A stored folder stays as it is.
+        db = await self.database(OLD_STORED)
+        self.assertEqual((await db.settings.load()).download_dir, Path(r"Z:\watch"))
 
 
 class SettingsStorageTests(unittest.IsolatedAsyncioTestCase):

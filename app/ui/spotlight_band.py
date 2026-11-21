@@ -11,7 +11,10 @@ and, at the right end, the name button (the selected person's avatar, name and
 ▾, `set_person`; a click calls `on_person`, the people menu) on the right. The Series side's
 titles are the selected person's (`profile`). Under them the
 spotlight: the small poster, a tag ("TONIGHT · 21:00", "TRENDING", …), the title, a muted line
-("3 episodes today", a film's "2026 · ★ 7.0") and a dot per title. The titles come from
+("3 episodes today", a film's "2026 · ★ 7.0") and a dot per title. A narrow window (a small
+screen, a large scaling) tightens the top row (`band_layout`), every control kept: the switch's
+parts close around their words, then the logo without "AirGrabber", then the name button with
+only the avatar (the name in its tip). The titles come from
 app/services/spotlight.py: Series and Movies each have their own; the Downloads page keeps the
 last side's.
 
@@ -94,6 +97,7 @@ from app.ui.spotlight import (
     PERSON_NAME_GAP,
     PERSON_NAME_MAX,
     SEGMENT_FONT_SIZE,
+    SEGMENT_PAD_TIGHT,
     SEGMENT_PAD_X,
     SWITCH_BADGE_GAP,
     SWITCH_BADGE_PAD,
@@ -815,6 +819,7 @@ class SpotlightBand(tk.Canvas):
             history=self._compact,
             phone=self._phone_shown,
             part_widths=self._part_widths() if self._on_part is not None else (),
+            tight_part_widths=self._part_widths(tight=True) if self._on_part is not None else (),
         )
         self._layout = layout
         px = self._px
@@ -825,8 +830,9 @@ class SpotlightBand(tk.Canvas):
         self.coords(
             self._word_items[1], px(layout.word_x + self._fonts["word"].measure(first)), middle
         )
+        word_state = "normal" if layout.word else "hidden"  # a tight row: only the logo
         for item, part in zip(self._word_items, (first, second), strict=True):
-            self.itemconfigure(item, text=part, font=self._scaled("word"))
+            self.itemconfigure(item, text=part, font=self._scaled("word"), state=word_state)
         for item, name in (
             (self._tag_item, "tag"),
             (self._title_item, "title"),
@@ -905,10 +911,17 @@ class SpotlightBand(tk.Canvas):
             self._forge_count = count
             self._paint_switch()
 
-    def _part_widths(self) -> tuple[float, ...]:
-        """Series, Movies (and Library) as wide as each other, MediaForge by its own word."""
+    def _part_widths(self, *, tight: bool = False) -> tuple[float, ...]:
+        """Series, Movies (and Library) as wide as each other, MediaForge by its own word.
+        `tight` (a narrow window, `band_layout`): the others each by its own word, less padded;
+        MediaForge as ever (the room for its badge)."""
         font = self._fonts["switch"]
         names = {part: font.measure(t(label)) for part, label in PART_LABELS.items()}
+        if tight:
+            return tuple(
+                names[part] + 2 * (SEGMENT_PAD_X if part is SwitchPart.FORGE else SEGMENT_PAD_TIGHT)
+                for part in self._parts
+            )
         even = [part for part in self._parts if part is not SwitchPart.FORGE]
         side = max(names[part] for part in even) + 2 * SEGMENT_PAD_X
         return tuple(
@@ -1114,7 +1127,9 @@ class SpotlightBand(tk.Canvas):
             self._person_arrow, text=PERSON_ARROW, fill=theme.pick(theme.TEXT_MUTED)
         )
         for item in items:
-            self.itemconfigure(item, state="normal")
+            # A tight row (a narrow window): only the avatar, the name in its tip.
+            named = layout.person_name or item in (self._person_item, self._avatar_item)
+            self.itemconfigure(item, state="normal" if named else "hidden")
 
     def _paint_badge(self) -> None:
         """⬇'s green badge: how many downloads are on their way."""
@@ -1262,7 +1277,7 @@ class SpotlightBand(tk.Canvas):
         if not self._show_cursor():
             return
         self._hide_tip()
-        if hit is not None and hit.kind in _TIPS:
+        if hit is not None and (hit.kind in _TIPS or self._name_in_tip(hit)):
             self._tip_job = self._later(TIP_DELAY_MS, lambda: self._show_tip(hit))
         kinds = {h.kind for h in (previous, hit) if h is not None}
         if kinds & _CONTROLS:
@@ -1318,10 +1333,24 @@ class SpotlightBand(tk.Canvas):
             self._entry_focused = focused
             self._paint_controls()
 
+    def _name_in_tip(self, hit: Hit) -> bool:
+        """Whether `hit` is the name button showing only the avatar (a tight row): its tip
+        says whose it is."""
+        layout = self._layout
+        return (
+            hit.kind is HitKind.PERSON
+            and self._person is not None
+            and layout is not None
+            and not layout.person_name
+        )
+
     def _show_tip(self, hit: Hit) -> None:
         self._tip_job = None
         layout = self._layout
         if layout is None or hit != self._hover or not self.winfo_ismapped():
+            return
+        if self._name_in_tip(hit) and self._person is not None:
+            self._tip.show(self._screen_tip_box(layout.person), self._person[0], self._px(tooltip.GAP))
             return
         rect = {
             HitKind.SEARCH: layout.magnifier,
@@ -1330,9 +1359,13 @@ class SpotlightBand(tk.Canvas):
             HitKind.SETTINGS: layout.settings,
             HitKind.PHONE: layout.phone,
         }[hit.kind]
+        self._tip.show(self._screen_tip_box(rect), t(_TIPS[hit.kind]), self._px(tooltip.GAP))
+
+    def _screen_tip_box(self, rect: Rect) -> tuple[int, int, int, int]:
+        """`rect` on the screen as (left, top, right, bottom) physical pixels: what a tip goes
+        under."""
         left, top = self.winfo_rootx() + self._px(rect.x), self.winfo_rooty() + self._px(rect.y)
-        screen = (left, top, left + self._px(rect.w), top + self._px(rect.h))
-        self._tip.show(screen, t(_TIPS[hit.kind]), self._px(tooltip.GAP))
+        return left, top, left + self._px(rect.w), top + self._px(rect.h)
 
     def _hide_tip(self) -> None:
         if self._tip_job is not None:

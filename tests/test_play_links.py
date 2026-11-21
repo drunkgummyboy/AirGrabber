@@ -10,6 +10,7 @@ import contextlib
 import socket
 import ssl
 import tempfile
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,13 +20,17 @@ from urllib.parse import urlsplit
 
 from app.config import AppPaths
 from app.i18n import t
+from app.services.phone import library as library_module
 from app.services.phone import play_links as play_links_module
+from app.services.phone.cast_stream import Probed
 from app.services.phone.certificate import ensure_certificate
 from app.services.phone.devices import DeviceStore
 from app.services.phone.library import PLEX_LIBRARY_TEXT, PhoneLibrary
 from app.services.phone.play_links import (
+    NOT_SERVING_TEXT,
     PLAY_LINK_HOURS,
     PLAY_PORT,
+    PLAY_PORTS,
     TOKEN_BYTES,
     PlayLinks,
 )
@@ -33,7 +38,7 @@ from app.services.phone.server import PhoneServer, Reply, Request, range_span
 from app.services.phone.service import PORT_BUSY_TEXT, PhoneService
 from tests.plex_link import TOKEN
 from tests.test_phone_library import DUNE, DUNE_ID, GONE, LibraryCase, film
-from tests.test_phone_service import HOME, ServiceCase
+from tests.test_phone_service import HOME, PLEX, ServiceCase
 
 NOW = datetime(2026, 11, 16, 20, 0, tzinfo=UTC)
 DLNA_FEATURES = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
@@ -345,6 +350,16 @@ class RouteTests(LibraryCase):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.links = PlayLinks(now=lambda: NOW)
+        self.play_port = _free_port()
+        await self.links.start(self.play_port)
+        self.addAsyncCleanup(self.links.stop)
+        self.probed: list[Path] = []
+        self.probe_answer: Probed | None = None
+
+        async def probe(path: Path) -> Probed | None:
+            self.probed.append(path)
+            return self.probe_answer
+
         self.library = PhoneLibrary(
             self.settings,
             self.playing,
@@ -353,6 +368,7 @@ class RouteTests(LibraryCase):
             cast(Any, self.discovery),
             cast(Any, self.tmdb),
             play_links=self.links,
+            probe=probe,
         )
         self.video = self.root / "Dune.2160p.MKV"
         self.data = b"dune" * 10
@@ -375,9 +391,17 @@ class RouteTests(LibraryCase):
         reply = await self.play_link("192.168.1.20")
         self.assertEqual(reply.status, 200, reply.body)
         url = reply.body["url"]
-        self.assertTrue(url.startswith(f"http://192.168.1.20:{PLAY_PORT}/p/"), url)
+        # The port the link server got (PLAY_PORTS: 58762 first, then 47762, then a free one).
+        self.assertTrue(url.startswith(f"http://192.168.1.20:{self.play_port}/p/"), url)
         self.assertTrue(url.endswith("/video.mkv"), url)
         self.assertEqual(PLAY_PORT, 58762)
+        self.assertEqual(PLAY_PORTS, (58762, 47762, 0))
+        # Without ffprobe's word the codecs are null.
+        self.assertEqual(
+            (reply.body["video_codec"], reply.body["height"], reply.body["audio_codec"]),
+            (None, None, None),
+        )
+        self.assertEqual(self.probed, [self.video])
         self.assertEqual(
             datetime.fromisoformat(reply.body["expires_at"]), NOW + timedelta(hours=6)
         )
@@ -398,9 +422,7 @@ class RouteTests(LibraryCase):
             ),
         )
         # And the link works, on the link server.
-        port = _free_port()
-        await self.links.start(port)
-        self.addAsyncCleanup(self.links.stop)
+        port = self.play_port
         path = urlsplit(url).path
         self.assertEqual((await fetch(port, "GET", path)).body, self.data)
         srt = next(one for one in reply.body["subtitles"] if one["id"] == ids["srt"])
@@ -418,9 +440,59 @@ class RouteTests(LibraryCase):
                 reply = await self.play_link(local)
                 self.assertEqual(reply.status, 200, reply.body)
                 self.assertTrue(
-                    reply.body["url"].startswith(f"http://{host}:{PLAY_PORT}/p/"),
+                    reply.body["url"].startswith(f"http://{host}:{self.play_port}/p/"),
                     reply.body["url"],
                 )
+
+    async def test_the_codecs_for_the_phones_choice(self) -> None:
+        self.probe_answer = Probed(
+            "hevc", (2, 6), 100.0, 2160, True, ("aac", "eac3"), default_sound=1
+        )
+        reply = await self.play_link("192.168.1.20")
+        self.assertEqual(
+            (reply.body["video_codec"], reply.body["height"], reply.body["audio_codec"]),
+            ("hevc", 2160, "eac3"),  # the default sound track's, not the first's
+        )
+        self.probe_answer = Probed("h264", (), 100.0, None, False, (), None)  # no sound
+        reply = await self.play_link("192.168.1.20")
+        self.assertEqual(
+            (reply.body["video_codec"], reply.body["height"], reply.body["audio_codec"]),
+            ("h264", None, None),
+        )
+
+    async def test_a_link_names_the_port_it_got_and_none_without_one(self) -> None:
+        await self.links.stop()
+        taken = socket.socket()
+        self.addCleanup(taken.close)
+        taken.bind(("0.0.0.0", 0))
+        taken.listen()
+        busy = int(taken.getsockname()[1])
+        await self.links.start((busy, 0))  # as 58762 kept by Windows: a free one then
+        self.assertNotIn(self.links.port, (None, 0, busy))
+        reply = await self.play_link("192.168.1.20")
+        self.assertEqual(urlsplit(reply.body["url"]).port, self.links.port)
+        fetched = await fetch(self.links.port or 0, "GET", urlsplit(reply.body["url"]).path)
+        self.assertEqual(fetched.body, self.data)
+        await self.links.stop()
+        self.assertIsNone(self.links.port)
+        reply = await self.play_link("192.168.1.20")
+        self.assertEqual(
+            (reply.status, reply.body),
+            (503, {"error": "failed", "message": t(NOT_SERVING_TEXT)}),
+        )
+
+    async def test_a_share_asleep_is_folder_timeout(self) -> None:
+        def asleep(_path: Path) -> int:
+            time.sleep(1.0)
+            return 0
+
+        with (
+            mock.patch.object(library_module, "READ_TIMEOUT_S", 0.2),
+            mock.patch.object(library_module, "_size_of", asleep),
+        ):
+            reply = await self.play_link("192.168.1.20")
+        self.assertEqual((reply.status, reply.body["error"]), (504, "folder_timeout"))
+        self.assertEqual(self.links._links, {})
 
     async def test_an_address_that_cant_be_one_is_a_bad_request(self) -> None:
         for local in ("", "8.8.8.8", "not an address"):
@@ -462,7 +534,9 @@ class RouteTests(LibraryCase):
 
 
 class WithThePhoneConnectionTests(ServiceCase):
-    def service_with_links(self) -> tuple[PhoneService, PlayLinks, int]:
+    def service_with_links(
+        self, play_ports: int | tuple[int, ...] | None = None
+    ) -> tuple[PhoneService, PlayLinks, int]:
         links = PlayLinks()
         play_port = _free_port()
         service = PhoneService(
@@ -474,10 +548,30 @@ class WithThePhoneConnectionTests(ServiceCase):
             finder_port=self.finder_port,
             addresses=lambda: [HOME],
             play_links=links,
-            play_port=play_port,
+            play_port=play_ports if play_ports is not None else play_port,
         )
         self.addAsyncCleanup(service.aclose)
         return service, links, play_port
+
+    async def test_a_kept_play_port_falls_back_and_hello_says_the_one_it_got(self) -> None:
+        await self.settings.update(**PLEX)
+        busy = socket.socket()
+        self.addCleanup(busy.close)
+        busy.bind(("0.0.0.0", 0))
+        busy.listen()
+        kept = int(busy.getsockname()[1])  # as 58762 inside a range Hyper-V keeps
+        second = _free_port()  # as 47762
+        service, links, _ = self.service_with_links((kept, second, 0))
+        self.service = service
+        await service.set_on(True)
+        self.assertIsNone(service.problem)
+        self.assertEqual(links.port, second)
+        status, paired = await self.pair()
+        self.assertEqual((status, paired["play_port"]), (200, second))
+        _, hello = await self.ask("GET", "/v1/hello", token=paired["token"])
+        self.assertEqual(hello["play_port"], second)
+        await service.set_on(False)
+        self.assertIsNone(links.port)
 
     async def plain_port_is_open(self, port: int) -> bool:
         try:

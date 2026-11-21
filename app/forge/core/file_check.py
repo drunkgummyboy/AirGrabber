@@ -10,8 +10,8 @@ Activity strip as a warning. Two findings:
 - Picture: the release name promises a resolution (1080p) and the picture is clearly smaller
   (under SMALLER_SHARE of it): "Says 1080p, but the picture is 720p" (an upscale or a fake).
 
-ffprobe comes with the trailer tools (`AppPaths.forge / "tools" / "ffmpeg" / "bin"`); without it
-nothing is checked. It runs once per video, no window, for at most PROBE_TIMEOUT_S. Its output is
+ffprobe is one of the video tools that come with AirGrabber (app/services/media_tools.py,
+`AppPaths.forge / "tools" / "ffmpeg" / "bin"`); without it nothing is checked. It runs once per video, no window, for at most PROBE_TIMEOUT_S. Its output is
 never logged (it names the user's folders); the log gets counts only.
 """
 

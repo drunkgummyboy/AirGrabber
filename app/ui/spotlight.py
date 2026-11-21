@@ -177,6 +177,9 @@ PERSON_PAD_RIGHT = 12
 PERSON_NAME_MAX = 120  # a longer name is cut short
 PERSON_FONT_SIZE = 14
 PERSON_ARROW = "▾"
+# A tight row (a narrow window, `band_layout`): the name button with only the avatar, round like
+# the other buttons.
+PERSON_TIGHT_WIDTH = 2 * PERSON_PAD_LEFT + PERSON_AVATAR
 POSTER_TOP = ROW_TOP + ROW_HEIGHT + 22  # the row → the spotlight
 POSTER_WIDTH = 44
 POSTER_HEIGHT = 64
@@ -249,6 +252,8 @@ class BandLayout:
     phone: Rect = Rect(0, 0, 0, 0)  # 📱, between ⚙ and the name: with a phone connected (else 0 wide)
     pill: Rect = Rect(0, 0, 0, 0)  # the main menu's switch (else 0 wide)
     parts: tuple[Rect, ...] = ()  # its parts: Series, Movies, MediaForge
+    word: bool = True  # "AirGrabber" beside the logo (a tight row: only the logo)
+    person_name: bool = True  # the name and ▾ on the name button (a tight row: only the avatar)
 
     @property
     def row_middle(self) -> float:
@@ -289,6 +294,7 @@ def band_layout(
     history: bool = False,
     part_widths: Sequence[float] = (),
     phone: bool = False,
+    tight_part_widths: Sequence[float] = (),
 ) -> BandLayout:
     """The band at `width` units: the logo and "AirGrabber" (`word_width` wide) on the left, then
     the main menu's switch (a part per `part_widths`), the search field, ⬇, the settings button
@@ -298,11 +304,54 @@ def band_layout(
     (MediaForge's page) goes right beside the settings button, with ⬇ and the search field moving
     over for it; the settings button and the name stay where they are on every page and no other
     page has a gap. `phone`: 📱 (what's on your phone) right beside the name button, the other
-    buttons moving over for it (shown while a phone is connected, on every page alike)."""
+    buttons moving over for it (shown while a phone is connected, on every page alike).
+
+    Narrower than that row at SEARCH_MIN_WIDTH (a small screen, or a large scaling), the row
+    tightens step by step until it fits, every control kept: the switch's parts to their own
+    words (`tight_part_widths`), then the logo without "AirGrabber" (`word`), then the name
+    button with only the avatar (`person_name`)."""
+    tight_parts = tight_part_widths or part_widths
+    tight_person = min(person_width, PERSON_TIGHT_WIDTH)
+    steps = (
+        (part_widths, True, person_width),
+        (tight_parts, True, person_width),
+        (tight_parts, False, person_width),
+        (tight_parts, False, tight_person),
+    )
+    for parts, word, person in steps:
+        layout = _band_row(
+            width,
+            word_width=word_width if word else 0.0,
+            dots=dots,
+            current=current,
+            person_width=person,
+            history=history,
+            part_widths=parts,
+            phone=phone,
+        )
+        left = layout.pill.right if layout.pill.w > 0 else layout.brand.right
+        if layout.search.x >= left + CLUSTER_GAP - 0.01:
+            break
+    return layout
+
+
+def _band_row(
+    width: float,
+    *,
+    word_width: float,
+    dots: int,
+    current: int,
+    person_width: float,
+    history: bool,
+    part_widths: Sequence[float],
+    phone: bool,
+) -> BandLayout:
+    """`band_layout` with one set of widths (`word_width` 0: no "AirGrabber"; `person_width` at
+    PERSON_TIGHT_WIDTH: only the avatar)."""
     right = width - PAD_X
     logo = Rect(PAD_X, ROW_TOP, LOGO_SIZE, LOGO_SIZE)
     word_x = logo.right + WORD_GAP
-    left_end = word_x + word_width
+    left_end = word_x + word_width if word_width > 0 else logo.right
     person = Rect(right - person_width, ROW_TOP, person_width, BUTTON_SIZE)
     buttons_right = person.x - BUTTON_GAP if person_width > 0 else right
     mobile = Rect(buttons_right - BUTTON_SIZE, ROW_TOP, BUTTON_SIZE, BUTTON_SIZE)
@@ -361,6 +410,8 @@ def band_layout(
         phone=mobile if phone else Rect(0, 0, 0, 0),
         pill=switch.pill if switch else Rect(0, 0, 0, 0),
         parts=switch.segments if switch else (),
+        word=word_width > 0,
+        person_name=person_width > PERSON_TIGHT_WIDTH,
     )
 
 
@@ -426,6 +477,7 @@ def controls(layout: BandLayout) -> Sequence[Rect]:
 
 PILL_PAD = 4  # the switch's solid pill around its parts
 SEGMENT_PAD_X = 24  # either side of "Series" / "Movies" / "MediaForge"
+SEGMENT_PAD_TIGHT = 14  # a tight row's (`band_layout`) parts but MediaForge's (its badge's room)
 SEGMENT_FONT_SIZE = 15
 SWITCH_BADGE_GAP = 5  # MediaForge's word → its waiting files' badge, in the part's own padding
 SWITCH_BADGE_PAD = 6  # the badge's width around its number

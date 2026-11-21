@@ -34,6 +34,8 @@ from app.services.playback import (
     launch_video,
     local_candidates,
     next_episode,
+    settings_folders,
+    windows_file,
 )
 from app.services.playback import EPISODES_TTL_S
 from app.services import plex as plex_module
@@ -527,8 +529,68 @@ class ServiceTests(PlexPlayTestCase):
         service = PlaybackService(
             self.plex, self.service._folders, launch=self.launch, exists=hangs, timeout_s=0.05
         )
+        with self.assertLogs("app.services.playback", "INFO") as logs:
+            outcome = await service.play_film(await self.dune())
+        self.assertEqual(outcome.problem, PlayProblem.TIMED_OUT)  # not "isn't in your folder"
+        self.assertEqual(outcome.text, "The folder didn't answer in time. Try again.")
+        self.assertFalse([line for line in logs.output if any(p in line for p in PRIVATE)])
+
+    def test_the_timed_out_text_in_dutch(self) -> None:
+        self.assertIn("The folder didn't answer in time. Try again.", NL)
+
+    async def test_a_folder_that_hangs_leaves_the_others_theirs(self) -> None:
+        films = r"D:\Films"
+
+        def slow_share(path: str) -> bool:
+            if path.startswith(films):
+                time.sleep(0.5)  # a NAS asleep
+                return False
+            return path in self.here
+
+        for own in ([films], [MOVIES, films]):
+            with self.subTest(own=own):
+                self.launch.paths.clear()
+                service = self.make(own_folders=lambda kind, own=own: own, timeout_s=0.2)
+                service._exists = slow_share
+                started = time.monotonic()
+                outcome = await service.play_film(await self.dune())
+                self.assertTrue(outcome.played, outcome)
+                self.assertEqual(self.launch.paths, [DUNE_HERE])  # MediaForge's / the 2nd
+                self.assertLess(time.monotonic() - started, 0.45)  # within the overall limit
+
+    async def test_plex_on_this_pc_its_own_file_name_first(self) -> None:
+        here = r"D:\Media\Movies\Dune Part Two (2024).mkv"
+        self.here = {here}
+        self.folders = None  # MediaForge off: not needed
+        video = PlexVideo(key="3001", file=here)
+        found = await self.service.locate(await self.dune(), video)
+        assert isinstance(found, playback.Located), found
+        self.assertEqual(found.path, here)
+        self.here = set()
+        missing = await self.service.locate(await self.dune(), video)
+        assert isinstance(missing, PlayOutcome)
+        self.assertEqual(missing.problem, PlayProblem.FORGE_OFF)  # nowhere else to look
+
+    def test_windows_file(self) -> None:
+        self.assertTrue(windows_file(r"D:\Media\Dune.mkv"))
+        self.assertTrue(windows_file(r"\\nas\video\Dune.mkv"))
+        self.assertTrue(windows_file("C:/Media/Dune.mkv"))
+        for no in ("/volume1/video/Dune.mkv", "Dune.mkv", r"Media\Dune.mkv", "", "D:Dune.mkv"):
+            self.assertFalse(windows_file(no), no)
+
+    async def test_the_own_folders_first_whatever_their_switch(self) -> None:
+        films = r"E:\Films"
+        mine = films + r"\Dune Part Two (2024)\Dune Part Two (2024).mkv"
+        self.here = {mine, DUNE_HERE}
+        await self.settings.update(film_folders=(films,), folder_library_on=False)
+        service = self.make(own_folders=settings_folders(lambda: self.settings.current))
+        self.assertTrue((await service.play_film(await self.dune())).played)
+        self.assertEqual(self.launch.paths, [mine])  # before MediaForge's Movies folder
+        self.folders = None  # MediaForge off: the own folders still find it
+        self.assertTrue((await service.play_film(await self.dune())).played)
+        self.here = set()
         outcome = await service.play_film(await self.dune())
-        self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)
+        self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)  # not FORGE_OFF: looked
 
     async def test_mediaforges_folders(self) -> None:
         dune = await self.dune()
@@ -1143,7 +1205,7 @@ class FolderSourceTests(FolderTestCase):
         self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)
         self.assertEqual(outcome.text, "AirGrabber can't find Dune in your folders right now.")
 
-    async def test_a_folder_that_hangs_counts_as_not_holding_the_file(self) -> None:
+    async def test_a_folder_that_hangs_says_it_didnt_answer(self) -> None:
         def slow(path: str) -> bool:
             time.sleep(0.3)  # a NAS waking up
             return True
@@ -1156,7 +1218,9 @@ class FolderSourceTests(FolderTestCase):
         assert isinstance(video, PlexVideo)
         outcome = await playback.locate(DUNE_FOLDER, video)
         assert isinstance(outcome, PlayOutcome)
-        self.assertEqual(outcome.problem, PlayProblem.NOT_FOUND)
+        self.assertEqual(outcome.problem, PlayProblem.TIMED_OUT)  # not "can't find it"
+        self.assertTrue(outcome.folders)
+        self.assertEqual(outcome.text, "The folder didn't answer in time. Try again.")
 
 
 # -- both sources: a show's and a film's window (two shelves) -------------------------------------

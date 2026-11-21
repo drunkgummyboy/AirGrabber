@@ -1,7 +1,8 @@
 """The phone app's download code (the owner's wish, 2026-11-10): a code a phone's camera opens as
-PHONE_APP_URL, where the Companion app's file (an APK, ~100 MB: too big for a file in the repository)
-waits on AirGrabber's GitHub page as the `phone-app` release's download; each new version replaces
-that file, so the link stays the same.
+PHONE_APP_URL (app/services/phone/companion_app.py, which `/v1/hello` hands the phone too), where
+the Companion app's file (an APK, ~100 MB: too big for a file in the repository) waits on
+AirGrabber's GitHub page as the `phone-app` release's download; each new version replaces that
+file, so the link stays the same.
 
 Shown when the hidden switch turns the phone features on (Settings → Updates, app/ui/settings_dialog.py),
 then with the restart it needs; Off says so without a code. Settings → Phone connection's "Get the phone
@@ -17,6 +18,7 @@ from typing import Any
 import customtkinter as ctk
 
 from app.i18n import N_, t
+from app.services.phone.companion_app import PHONE_APP_URL as PHONE_APP_URL  # re-exported
 from app.ui import theme
 from app.ui.borderless import make_borderless
 from app.ui.branding import set_window_icon
@@ -37,9 +39,6 @@ from app.ui.dialog_kit import (
     text_label,
 )
 
-PHONE_APP_URL = (
-    "https://github.com/drunkgummyboy/AirGrabber/releases/download/phone-app/AirGrabber-Companion.apk"
-)
 GET_APP_TITLE = N_("Get the phone app")
 GET_APP_BUTTON = N_("Get the phone app…")
 SCAN_APP_TEXT = N_(

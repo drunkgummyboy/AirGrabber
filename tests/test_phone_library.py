@@ -467,7 +467,7 @@ class EpisodesTests(LibraryCase):
 
 
 class FileTests(LibraryCase):
-    """`file`: the best copy that is there now, from a byte on (Range); a NAS asleep is 404."""
+    """`file`: the best copy that is there now, from a byte on (Range); a NAS asleep is 504."""
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -522,7 +522,37 @@ class FileTests(LibraryCase):
                 assert isinstance(reply, Reply), (key, reply)
                 self.assertEqual((reply.status, reply.body["error"]), (404, "no_longer_there"))
 
-    async def test_an_unreachable_share_answers_no_longer_there(self) -> None:
+    async def test_a_share_that_says_it_timed_out_is_folder_timeout(self) -> None:
+        def timed_out(_path: Path) -> int:
+            error = OSError(None, "The semaphore timeout period has expired")
+            error.winerror = 121  # Windows' ERROR_SEM_TIMEOUT
+            raise error
+
+        with mock.patch.object(library_module, "_size_of", timed_out):
+            reply = await self.call(FILE, {"key": "movie:438631"})
+        assert isinstance(reply, Reply), reply
+        self.assertEqual((reply.status, reply.body["error"]), (504, "folder_timeout"))
+
+    async def test_a_subtitle_that_doesnt_answer_in_time_is_folder_timeout(self) -> None:
+        def asleep(_path: Path, *, convert: bool) -> bytes:
+            time.sleep(1.0)
+            return b""
+
+        subtitle = self.best.with_name(self.best.stem + ".nl.srt")
+        subtitle.write_bytes(b"1\n00:00:01,000 --> 00:00:02,000\nHoi\n")
+        with (
+            mock.patch.object(library_module, "READ_TIMEOUT_S", 0.2),
+            mock.patch.object(library_module, "_subtitle_bytes", asleep),
+        ):
+            reply = await self.call(SUBTITLE, {"key": "movie:438631", "id": "0"})
+        assert isinstance(reply, Reply), reply
+        self.assertEqual(
+            (reply.status, reply.body),
+            (504, {"error": "folder_timeout",
+                   "message": t("The folder didn't answer in time. Try again.")}),
+        )  # fmt: skip
+
+    async def test_an_unreachable_share_answers_folder_timeout(self) -> None:
         def asleep(_path: Path) -> int:
             time.sleep(1.0)  # a NAS waking up, in the worker thread
             return 0
@@ -551,7 +581,8 @@ class FileTests(LibraryCase):
                 reply = await self.call(route, query)
                 took = time.perf_counter() - started
                 assert isinstance(reply, Reply), reply
-                self.assertEqual((reply.status, reply.body["error"]), (404, "no_longer_there"))
+                # The share didn't answer in time: the file may well be there (not 404).
+                self.assertEqual((reply.status, reply.body["error"]), (504, "folder_timeout"))
                 self.assertLess(took, 0.6, route)  # within the limit, not the stat's second
                 self.assertGreater(ticks - ticks_before, 5, route)  # the loop stayed free
 

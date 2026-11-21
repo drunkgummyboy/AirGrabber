@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.25.0": (
+        N_("MediaForge's video tools now come with AirGrabber: trailers work without switching anything on first."),
+        N_("▶ Play also finds films in your library folders, and when Plex runs on this PC."),
+        N_("Plex works on more home networks, and with servers shared with you or your Plex Home."),
+        N_("The main window fits smaller screens and higher zoom levels."),
+        N_("New setups use your own Downloads folder, also when you moved it."),
+        N_("A sleeping NAS now says it didn't answer in time, instead of that the file isn't there."),
+    ),
     "3.23.0": (
         N_("Player: point at the timeline and a small picture shows what happens at that moment."),
         N_("Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment."),

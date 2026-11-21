@@ -220,7 +220,7 @@ class RemoteDownloadsTests(unittest.TestCase):
     def test_the_client_follows_the_settings(self) -> None:
         settings = SettingsService(FakeRepository(), Settings())  # type: ignore[arg-type]
         remote = RemoteDownloads(settings)
-        self.assertIsInstance(remote.client(), DownloadStationClient)
+        self.assertIsInstance(remote.client(), QBittorrentClient)  # new settings' program
         expected = {
             RemoteKind.QBITTORRENT: QBittorrentClient,
             RemoteKind.TRANSMISSION: TransmissionClient,
@@ -316,7 +316,7 @@ class FormTests(GuiTestCase):
         # "Verify the certificate" is an on/off: a switch (spec §6), here and in the welcome.
         self.assertIsInstance(form._verify, ctk.CTkSwitch)
         self.assertEqual(form._verify.get(), 1)
-        self.assertEqual(form._address._entry.get(), ADDRESS_HINTS[RemoteKind.SYNOLOGY])
+        self.assertEqual(form._address._entry.get(), ADDRESS_HINTS[RemoteKind.QBITTORRENT])
         self.assertFalse(form.ready)
 
     async def test_the_program_menu_switches_the_hints(self) -> None:

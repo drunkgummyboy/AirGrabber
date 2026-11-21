@@ -4,8 +4,8 @@ player (libVLC plays plain http without pinning) and on a TV (Cast, an LG throug
 can't do the phone connection's TLS pin or send its token.
 
 `PhoneLibrary`'s `POST /v1/library/<video key>/play-link` makes one (`make`) on the address the
-phone reached the PC on (`play_url_host`); this server, on PLAY_PORT, started and stopped with the
-phone connection, answers it:
+phone reached the PC on (`play_url_host`) and the port this server got (`port`: PLAY_PORTS in
+order, 58762 first); this server, started and stopped with the phone connection, answers it:
 
 - `/p/<token>/video.<ext>`: the video, `Range: bytes=N-M` / `bytes=N-` giving 206 with exactly
   those bytes (TVs ask that way), past the end 416;
@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import unquote
 
+from app.i18n import N_, t
 from app.services.folder_library.scan import READ_TIMEOUT_S
 from app.services.folder_library.sidecars import VTT_TYPE, srt_to_vtt, subtitle_text
 from app.services.phone.copies import COPY_TYPE
@@ -51,9 +52,12 @@ from app.services.phone.server import (
     READ_TIMEOUT,
     FileReply,
     Refused,
+    Reply,
     close_writer,
+    error_reply,
     file_head,
     is_home_address,
+    listen,
     parse_head,
     range_span,
     send_file,
@@ -65,6 +69,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 PLAY_PORT = 58762
+# Tried in this order (server.py's `listen`; 47762 is outside Windows' dynamic range, 0 a free
+# port Windows picks): the links name the port it got (`port`), hello says it (`play_port`).
+PLAY_PORTS = (PLAY_PORT, 47762, 0)
 PLAY_LINK_HOURS = 6
 TOKEN_BYTES = 24
 MAX_SUBTITLE_BYTES = 5 * 1024 * 1024  # a subtitle file bigger than this isn't one
@@ -73,6 +80,9 @@ PAUSE_S = 300.0
 _MAX_HEAD = 16 * 1024
 _SUBTITLE = re.compile(r"(0|[1-9][0-9]{0,5})\.vtt")
 _VIDEO_TYPES = {".mkv": COPY_TYPE}  # what Python's own table doesn't know
+NOT_SERVING_TEXT = N_(
+    "AirGrabber's player links aren't running right now, so try again in a moment."
+)
 _EVERY_ANSWER = (
     ("Access-Control-Allow-Origin", "*"),  # Cast fetches the subtitles from its own page
     ("transferMode.dlna.org", "Streaming"),
@@ -120,6 +130,12 @@ def play_url_host(local_address: str) -> str | None:
             return str(address.ipv4_mapped)
         return f"[{str(address).replace('%', '%25')}]"
     return str(address)
+
+
+def not_serving() -> Reply:
+    """503: no link can be made while this server isn't running (its port couldn't be bound;
+    the phone connection tries again by itself)."""
+    return error_reply(503, "failed", t(NOT_SERVING_TEXT))
 
 
 def video_type(path: Path) -> str:
@@ -187,12 +203,18 @@ class PlayLinks:
         self._cast = cast
         self._links: dict[str, _Link] = {}
         self._server: asyncio.Server | None = None
+        self._port: int | None = None
         self._connections: set[asyncio.Task[None]] = set()
         self._next_warning: dict[str, float] = {}
 
     @property
     def running(self) -> bool:
         return self._server is not None
+
+    @property
+    def port(self) -> int | None:
+        """The port the links are served on, while it runs (None: not running)."""
+        return self._port
 
     def make(self, video: Path, subtitles: Sequence[Path]) -> tuple[str, datetime]:
         """A new link to `video` and its `subtitles` (served as `sub/<their place>.vtt`): its
@@ -204,21 +226,30 @@ class PlayLinks:
         self._links[token] = _Link(video, tuple(subtitles), expires)
         return token, expires
 
-    async def start(self, port: int = PLAY_PORT) -> None:
-        """Listen on every address of this PC. Raises OSError when that fails (port in use)."""
+    async def start(self, ports: int | Sequence[int] = PLAY_PORTS) -> None:
+        """Listen on every address of this PC, on the first of `ports` that can be bound.
+        Raises OSError when none can be (each in use, or kept by Windows)."""
         if self._server is not None:
             return
-        self._server = await asyncio.start_server(
-            self._accept, host=None, port=port, limit=_MAX_HEAD
+
+        async def open_on(host: str | None, port: int) -> asyncio.Server:
+            return await asyncio.start_server(self._accept, host=host, port=port, limit=_MAX_HEAD)
+
+        self._server, self._port = await listen(
+            open_on, (ports,) if isinstance(ports, int) else ports
         )
-        log.info("Play link server listening on port %d", port)
+        if self._cast is not None:
+            self._cast.serving(self._port)
+        log.info("Play link server listening on port %d", self._port)
 
     async def stop(self) -> None:
         """Stop listening, drop every open connection and forget every link."""
         server, self._server = self._server, None
+        self._port = None
         self._links = {}
         if self._cast is not None:
             self._cast.forget()  # its ffmpegs end with the connections below
+            self._cast.serving(None)
         if server is None:
             return
         server.close()

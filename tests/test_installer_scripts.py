@@ -412,6 +412,52 @@ foreach ($scenario in (ConvertFrom-Json $env:AG_SCENARIOS)) {
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
+class InstallerVideoToolsTests(unittest.TestCase):
+    """The video tools (ffmpeg, ffprobe, yt-dlp) come with the install: fetched by AirGrabber
+    itself (main.py --fetch-tools, app/services/media_tools.py) once its packages are in; a
+    failure says so and goes on (AirGrabber tries again after it starts)."""
+
+    def test_fetched_by_the_app_and_a_failure_goes_on(self) -> None:
+        script = _load_installer(("Write-Step", "Install-VideoTools")) + """
+$InstallDir = $env:AG_INSTALL_DIR
+function Fake-Python {
+    $global:AgLog.Add('python ' + ($args -join ' '))
+    if ($global:AgCode -eq 'throw') { throw 'no python' }
+    $global:LASTEXITCODE = $global:AgCode
+}
+$results = New-Object System.Collections.Generic.List[object]
+foreach ($code in @(0, 1, 'throw')) {
+    $global:AgCode = $code
+    $global:AgLog = New-Object System.Collections.Generic.List[string]
+    $records = @(Install-VideoTools 'Fake-Python' 6>&1)
+    $results.Add([pscustomobject]@{
+        host = [string[]]@($records | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
+            ForEach-Object { [string]$_.MessageData })
+        log = [string[]]$global:AgLog.ToArray()
+    })
+}
+'JSON:' + (Out-Base64 (ConvertTo-Json -InputObject $results.ToArray() -Depth 4 -Compress))
+"""
+        results = _json_line(_powershell(script, {"AG_INSTALLER": str(INSTALLER), "AG_INSTALL_DIR": _INSTALL_DIR}))
+        step = "==> Getting the video tools (ffmpeg, about 110 MB, so this can take a few minutes)"
+        failed = (
+            "    The video tools could not be downloaded now. AirGrabber gets them by itself after "
+            "it starts."
+        )
+        for result in results:
+            self.assertEqual(result["log"], [rf"python {_INSTALL_DIR}\main.py --fetch-tools"])
+        self.assertEqual([result["host"] for result in results], [[step], [step, failed], [step, failed]])
+
+    def test_every_install_fetches_them_once_the_packages_are_in(self) -> None:
+        source = INSTALLER.read_text(encoding="ascii")
+        body = source[source.index("function Install-AirGrabber {") :]
+        call = "    Install-VideoTools $python\n"
+        self.assertEqual(body.count(call), 1)  # not only a new install's: an update's too
+        self.assertLess(body.index("    Install-Requirements $python"), body.index(call))
+        self.assertLess(body.index(call), body.index("    if (-not $NoLaunch) {"))
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell is Windows-only")
 class InstallerWingetTests(unittest.TestCase):
     """Initialize-Winget: found, registered, downloaded from winget's release, or given up."""
 

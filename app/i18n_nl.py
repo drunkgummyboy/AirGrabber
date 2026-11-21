@@ -1578,6 +1578,18 @@ NL: dict[str, str] = {
     "AirGrabber on your phone": "AirGrabber op je telefoon",
     "The Companion app for Android brings your library to your phone: browse it and watch there, search for something new to download, and copy films onto the phone for later. Switch it on in Settings → Phone connection.":
         "De Companion-app voor Android zet je bibliotheek op je telefoon: blader erdoor en kijk erop, zoek iets nieuws om te downloaden en zet films op je telefoon voor later. Zet het aan bij Instellingen → Telefoonverbinding.",
+    "MediaForge's video tools now come with AirGrabber: trailers work without switching anything on first.":
+        "De videohulpmiddelen van MediaForge komen nu met AirGrabber mee: trailers werken zonder eerst iets aan te zetten.",
+    "▶ Play also finds films in your library folders, and when Plex runs on this PC.":
+        "▶ Afspelen vindt films ook in je bibliotheekmappen, en als Plex op deze pc draait.",
+    "Plex works on more home networks, and with servers shared with you or your Plex Home.":
+        "Plex werkt op meer thuisnetwerken, en met servers die met jou of je Plex Home gedeeld zijn.",
+    "The main window fits smaller screens and higher zoom levels.":
+        "Het hoofdvenster past op kleinere schermen en bij grotere zoomniveaus.",
+    "New setups use your own Downloads folder, also when you moved it.":
+        "Nieuwe installaties gebruiken je eigen map Downloads, ook als je die verplaatst hebt.",
+    "A sleeping NAS now says it didn't answer in time, instead of that the file isn't there.":
+        "Een slapende NAS meldt nu dat hij niet op tijd antwoordde, in plaats van dat het bestand er niet is.",
     "Player: point at the timeline and a small picture shows what happens at that moment.":
         "Speler: wijs de tijdlijn aan en een klein plaatje laat zien wat er op dat moment gebeurt.",
     "Player: pausing or playing, with a click, Space or the button, shows a sign in the middle for a moment.":
@@ -1924,8 +1936,14 @@ NL: dict[str, str] = {
         "AirGrabber kent dat verzoek niet, dus werk AirGrabber en de Companion-app bij.",
     "Something went wrong in AirGrabber, so try again in a moment.":
         "Er ging iets mis in AirGrabber, dus probeer het zo opnieuw.",
-    "Another program is using the port the phone connection needs, so close that program or restart your PC.":
-        "Een ander programma gebruikt de poort die de telefoonverbinding nodig heeft, dus sluit dat programma of start je pc opnieuw op.",
+    "Windows wouldn't give the phone connection a network port, so restart your PC and try again.":
+        "Windows gaf de telefoonverbinding geen netwerkpoort, dus start je pc opnieuw op en probeer het nog eens.",
+    "Windows treats this network as public, so your phone can't reach this PC: in Windows' Settings → Network & internet, open this network's properties and choose Private network.":
+        "Windows behandelt dit netwerk als openbaar, dus je telefoon kan deze pc niet bereiken: open in Windows-instellingen → Netwerk en internet de eigenschappen van dit netwerk en kies Particulier netwerk.",
+    "Windows Firewall is blocking “Python” (that's AirGrabber), so your phone can't reach this PC: in Windows Security → Firewall & network protection → Allow an app through firewall, tick “Python” for Private networks.":
+        "Windows Firewall blokkeert “Python” (dat is AirGrabber), dus je telefoon kan deze pc niet bereiken: vink in Windows-beveiliging → Firewall- en netwerkbeveiliging → Een app toestaan via firewall “Python” aan voor particuliere netwerken.",
+    "AirGrabber's player links aren't running right now, so try again in a moment.":
+        "De afspeellinks van AirGrabber werken nu even niet, dus probeer het zo nog eens.",
     "AirGrabber couldn't start the phone connection, so restart AirGrabber and try again.":
         "AirGrabber kon de telefoonverbinding niet starten, dus start AirGrabber opnieuw en probeer het nog eens.",
     "Another program is in the way of the phone connection, so your phone may not find this PC when its address changes: restart your PC to fix it.":
@@ -1944,8 +1962,8 @@ NL: dict[str, str] = {
         "AirGrabber kon die code niet lezen, dus scan hem opnieuw.",
     "Phone": "Telefoon",
     "Phone connection": "Telefoonverbinding",
-    "Windows may ask if AirGrabber may use your network. Choose Allow.":
-        "Windows vraagt misschien of AirGrabber je netwerk mag gebruiken. Kies Toestaan.",
+    "Windows may ask whether “Python” may use your network: that's AirGrabber, so choose Allow.":
+        "Windows vraagt misschien of “Python” je netwerk mag gebruiken: dat is AirGrabber, dus kies Toestaan.",
     "Library manager": "Bibliotheekbeheerder",
     "AirGrabber's library is Plex now, so pull down to refresh.":
         "De bibliotheek van AirGrabber is nu Plex, dus trek omlaag om te vernieuwen.",
@@ -1983,8 +2001,11 @@ NL: dict[str, str] = {
     "AirGrabber has no phone-sized copy of that film, so ask for it again.":
         "AirGrabber heeft geen telefoonkopie van die film, vraag er dus opnieuw om.",
     # app/services/phone/cast_stream.py
-    "This PC doesn't have MediaForge's video tools yet, so add trailers to a MediaForge preset once to get them.":
-        "Deze pc heeft de videohulpmiddelen van MediaForge nog niet, voeg dus één keer trailers toe aan een voorinstelling van MediaForge om ze te krijgen.",
+    # app/services/media_tools.py (also said by cast_stream.py and copies.py)
+    "AirGrabber is still getting its video tools (ffmpeg) for this PC, so try again in a few minutes.":
+        "AirGrabber haalt de videohulpmiddelen (ffmpeg) voor deze pc nog op, probeer het dus over een paar minuten nog eens.",
+    "AirGrabber couldn't get its video tools (ffmpeg) for this PC yet and tries again by itself, so try again later.":
+        "AirGrabber kon de videohulpmiddelen (ffmpeg) voor deze pc nog niet ophalen en probeert het zelf opnieuw, probeer het dus later nog eens.",
     "AirGrabber can't reach this video's file from this PC right now, so try again in a moment.":
         "AirGrabber kan het bestand van deze video nu niet bereiken vanaf deze pc, probeer het dus zo nog eens.",
     "Cancel all": "Alles annuleren",
@@ -2131,6 +2152,8 @@ NL: dict[str, str] = {
         "AirGrabber kan {name} nu niet vinden in je mappen.",
     "AirGrabber couldn't start a video player for {name}.":
         "AirGrabber kon geen videospeler starten voor {name}.",
+    "The folder didn't answer in time. Try again.":
+        "De map antwoordde niet op tijd. Probeer het opnieuw.",
     "▶ Play": "▶ Afspelen",
     "Play it on this PC": "Afspelen op deze pc",
     "Choose an episode to play.": "Kies een aflevering om af te spelen.",

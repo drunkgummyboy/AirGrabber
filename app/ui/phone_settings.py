@@ -1,7 +1,9 @@
 """Settings → Phone connection: the box over PhoneService (app/services/phone/service.py).
 
-A switch; the first time, a line that Windows will ask about the network; what's wrong in plain
-words; "Connect a phone" with the code to scan (black on white in both looks: a scanner needs
+A switch; the first time, a line that Windows will ask about the network (naming "Python", as
+Windows' question does); what's wrong in plain words, also a Public network or a firewall rule that
+keeps phones out (`PhoneService.network_hint`, asked of Windows each time the page opens while it's
+on, and when it's turned on); "Connect a phone" with the code to scan (black on white in both looks: a scanner needs
 that); and a box listing the connected phones. Each phone (the owner's wish, 2026-11-08): its name
 with Rename (in place: Enter saves, Escape doesn't), the person it belongs to (a choice while there
 is more than one), its own Library manager tick (the first phone pairs as one, later ones don't),
@@ -47,7 +49,10 @@ if TYPE_CHECKING:
     from app.services.phone.service import PhoneService
 
 SWITCH_TEXT = N_("Phone connection")
-FIREWALL_TEXT = N_("Windows may ask if AirGrabber may use your network. Choose Allow.")
+# Windows' own question names the program that runs AirGrabber: "Python".
+FIREWALL_TEXT = N_(
+    "Windows may ask whether “Python” may use your network: that's AirGrabber, so choose Allow."
+)
 MANAGER_TEXT = N_("Library manager")
 CONNECT_TEXT = N_("Connect a phone")
 SCAN_TEXT = N_("Scan this with the Companion app")
@@ -137,6 +142,9 @@ class PhoneBox:
         self.box.add(self._problem, gap=8, sticky="w")
         self._notice = self._line(body, theme.WARNING)
         self.box.add(self._notice, gap=8, sticky="w")
+        # A Public network or a firewall rule keeping phones out (PhoneService.network_hint).
+        self.network_hint = self._line(body, theme.WARNING)
+        self.box.add(self.network_hint, gap=8, sticky="w")
         self.connect_button = primary_button(
             body, t(CONNECT_TEXT), self.show_code, width=CONNECT_WIDTH
         )
@@ -165,6 +173,8 @@ class PhoneBox:
         tk.Misc.bind(self.box.frame, "<Destroy>", self._on_destroy, add="+")
         self._fill_list()
         self.refresh()
+        if phone.on:  # Windows is asked each time the page opens: the user may have fixed it
+            self._start(phone.check_network(), "phone-network")
 
     def _line(self, master: Any, colour: theme.Color) -> ctk.CTkLabel:
         return ctk.CTkLabel(
@@ -196,6 +206,7 @@ class PhoneBox:
                 self._firewall,
                 self._problem,
                 self._notice,
+                self.network_hint,
                 self.connect_button,
                 self._code_message,
             ):
@@ -209,6 +220,7 @@ class PhoneBox:
         _show(self._firewall, self._first_time)
         _show_text(self._problem, phone.problem)
         _show_text(self._notice, phone.notice)
+        _show_text(self.network_hint, phone.network_hint if phone.on else None)
         _show(self.connect_button, phone.running)
         if not phone.running:
             self._cancel_code()
@@ -424,6 +436,8 @@ class PhoneBox:
             if self.listening:
                 self.switch.configure(state="normal")
                 self.refresh()  # also when saving failed: the switch goes back
+        if on:
+            await self._phone.check_network()  # the page follows through `subscribe`
 
     # -- the phone app ---------------------------------------------------------------------------
 

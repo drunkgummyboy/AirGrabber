@@ -31,10 +31,15 @@ from app.models import ProfileColour, Settings
 from app.services import SettingsService
 from app.services.backup import settings_for_backup
 from app.services.phone.certificate import ensure_certificate
-from app.services.phone.server import Handler, Reply, Request
+from app.services.phone.firewall import NetworkCheck, NetworkFacts
+from app.services.phone.companion_app import PHONE_APP_URL
+from app.services.phone.server import PORTS, Handler, Reply, Request, is_home_address
 from app.services.phone.service import (
     CERTIFICATE_REMADE_TEXT,
     FINDER_BUSY_TEXT,
+    FINDER_PORTS,
+    FIREWALL_BLOCKS_TEXT,
+    PUBLIC_NETWORK_TEXT,
     ENABLED_MARKER,
     MAX_PHONE_NAME,
     NEEDS_LIBRARY_TEXT,
@@ -46,6 +51,7 @@ from app.services.phone.service import (
     PairingUnavailable,
     PhoneService,
     home_only,
+    ranked_addresses,
 )
 from app.services.profiles import ProfileService
 from app.ui.phone_settings import (
@@ -96,7 +102,13 @@ class ServiceCase(unittest.IsolatedAsyncioTestCase):
         self.tls = ssl.create_default_context()
         self.tls.check_hostname = False
         self.tls.verify_mode = ssl.CERT_NONE
+        self.network: NetworkFacts | None = None  # what the fake network check says
+        self.network_checks = 0
         self.service = self.make_service()
+
+    async def fake_network_check(self) -> NetworkFacts | None:
+        self.network_checks += 1
+        return self.network
 
     def make_service(
         self, routes: dict[tuple[str, str], Handler] | None = None
@@ -109,6 +121,7 @@ class ServiceCase(unittest.IsolatedAsyncioTestCase):
             port=self.port,
             finder_port=self.finder_port,
             addresses=lambda: [HOME],
+            network_check=self.fake_network_check,
         )
         self.addAsyncCleanup(service.aclose)
         return service
@@ -212,6 +225,15 @@ class PairingTests(ServiceCase):
                 "person": True,  # and has the actor page (`/v1/person`) and `progress`
                 "title": True,  # and the title page (`/v1/title`)
                 "cast_sound": False,  # no Cast sound streams here
+                # Where the phone checks for, and fetches, a newer Companion.
+                "app_update": {
+                    "version_url": (
+                        "https://github.com/drunkgummyboy/AirGrabber/releases/download/"
+                        "phone-app/version.json"
+                    ),
+                    "apk_url": PHONE_APP_URL,
+                },
+                # No "play_port": no play link server here (an older PC's answer: 58762).
             },
         )
         self.assertTrue(body["token"])
@@ -303,6 +325,15 @@ class PairingTests(ServiceCase):
         await self.settings.update(plex_server_uri="https://new.plex.direct:32400")
         _, hello = await self.ask("GET", "/v1/hello", token=paired["token"])
         self.assertEqual(hello["plex"]["uri"], "https://new.plex.direct:32400")
+
+    async def test_a_shared_servers_own_token_goes_to_the_phone(self) -> None:
+        # A Plex Home or shared server takes its own token: the phone gets that one.
+        await self.settings.update(plex_server_token="fake-shared-server-token")
+        status, paired = await self.pair()
+        self.assertEqual(status, 200)
+        self.assertEqual(paired["plex"]["token"], "fake-shared-server-token")
+        _, hello = await self.ask("GET", "/v1/hello", token=paired["token"])
+        self.assertEqual(hello["plex"]["token"], "fake-shared-server-token")
 
     async def test_hello_needs_a_paired_phone(self) -> None:
         status, _ = await self.ask("GET", "/v1/hello")
@@ -523,6 +554,36 @@ class HomeOnlyTests(unittest.TestCase):
             ["192.168.1.5", "10.0.0.2", "172.16.3.4"],
         )
 
+    def test_home_ranges_include_tailscale_and_ipv6_unique_local(self) -> None:
+        for address in ("100.64.0.1", "100.101.102.103", "100.127.255.254", "fd12:3456::1",
+                        "fc00::1", "::ffff:100.64.0.7"):
+            with self.subTest(address):
+                self.assertTrue(is_home_address(address))
+        for address in ("100.63.255.255", "100.128.0.1", "2001:db8::1", "2a02:a46::1", "fe00::1"):
+            with self.subTest(address):
+                self.assertFalse(is_home_address(address))
+
+    def test_the_codes_hosts_put_the_home_network_first(self) -> None:
+        # A full-tunnel VPN (CGNAT address) holds the default route: the Wi-Fi's address first,
+        # every one kept, IPv6 unique local ones after the IPv4 ones.
+        self.assertEqual(
+            ranked_addresses(
+                "100.96.0.5",
+                ["fd00:1::20", "100.96.0.5", "192.168.1.20", "fe80::1", "2a02:a46::20",
+                 "10.8.0.2", "8.8.8.8"],
+            ),
+            ["192.168.1.20", "10.8.0.2", "100.96.0.5", "fd00:1::20"],
+        )  # fmt: skip
+        # A private default route stays first; without one, the PC's own order.
+        self.assertEqual(
+            ranked_addresses("10.0.0.7", ["192.168.56.1", "10.0.0.7", "fd00::7"]),
+            ["10.0.0.7", "192.168.56.1", "fd00::7"],
+        )
+        self.assertEqual(
+            ranked_addresses(None, ["fd00::7", "172.20.1.2"]), ["172.20.1.2", "fd00::7"]
+        )
+        self.assertEqual(ranked_addresses(None, []), [])
+
 
 class FinderTests(ServiceCase):
     async def test_finder_answers_only_its_own_id(self) -> None:
@@ -558,6 +619,162 @@ class FinderTests(ServiceCase):
             self.assertTrue(self.service.running)
             self.assertEqual(self.service.problem, FINDER_BUSY_TEXT)
         self.assertTrue(await self.port_is_open())
+
+
+class PortTests(ServiceCase):
+    """58760 / 58761 / 58762 sit in Windows' dynamic range, which Hyper-V, WSL2 and Docker keep
+    pieces of (the bind fails with "access denied"): each has fallbacks."""
+
+    def taken(self, kind: socket.SocketKind = socket.SOCK_STREAM) -> int:
+        """A port in use for the whole test (as one Windows keeps)."""
+        holder = socket.socket(socket.AF_INET, kind)
+        self.addCleanup(holder.close)
+        holder.bind(("0.0.0.0", 0))
+        if kind == socket.SOCK_STREAM:
+            holder.listen()
+        return int(holder.getsockname()[1])
+
+    def service_on(
+        self, ports: tuple[int, ...], finder_ports: tuple[int, ...] | None = None
+    ) -> PhoneService:
+        service = PhoneService(
+            self.settings,
+            self.paths,
+            self.profiles,
+            routes_factory=dict,
+            port=ports,
+            finder_port=finder_ports or (self.finder_port,),
+            addresses=lambda: [HOME],
+        )
+        self.addAsyncCleanup(service.aclose)
+        return service
+
+    async def finder_says(self) -> bytes | None:
+        pc_id = self.settings.current.phone_pc_id
+        return await self.find(f"AGC? {pc_id}".encode())
+
+    def finder_answer(self, port: int) -> bytes:
+        return f"AGC! {self.settings.current.phone_pc_id} {port}".encode()
+
+    def test_the_ports_tried(self) -> None:
+        self.assertEqual(PORTS, (58760, 47760, 0))  # 58760 first: what older phones know
+        self.assertEqual(FINDER_PORTS, (58761, 47761))
+
+    async def test_a_kept_port_falls_back_and_is_remembered(self) -> None:
+        await self.settings.update(**PLEX)
+        kept = self.taken()
+        service = self.service_on((kept, self.port, 0))
+        await service.set_on(True)
+        self.assertIsNone(service.problem)
+        self.assertEqual(service.port, self.port)
+        self.assertEqual(self.settings.current.phone_port, self.port)
+        payload = json.loads(service.new_pairing_payload())
+        self.assertEqual(payload["port"], self.port)  # the code names the port it got
+        self.assertEqual(await self.finder_says(), self.finder_answer(self.port))
+        await service.aclose()
+        # Next start: the one it got last time first, also when the list's first is free.
+        again = self.service_on((_free_port(), self.port, 0))
+        await again.set_on(True)
+        self.assertEqual(again.port, self.port)
+
+    async def test_the_last_resort_is_a_free_port_windows_picks(self) -> None:
+        service = self.service_on((self.taken(), self.taken(), 0))
+        await service.set_on(True)
+        self.assertIsNone(service.problem)
+        port = service.port
+        assert port is not None
+        self.assertNotEqual(port, 0)
+        self.assertEqual(self.settings.current.phone_port, port)
+        _, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+        self.assertEqual(await self.finder_says(), self.finder_answer(port))
+
+    async def test_the_port_problem_is_said_only_when_nothing_could_be_bound(self) -> None:
+        service = self.service_on((self.taken(), self.taken()))
+        await service.set_on(True)
+        self.assertEqual(service.problem, PORT_BUSY_TEXT)
+        self.assertIsNone(service.port)
+
+    async def test_the_finder_listens_on_each_port_it_can(self) -> None:
+        kept = self.taken(socket.SOCK_DGRAM)
+        service = self.service_on((self.port,), (kept, self.finder_port))
+        await service.set_on(True)
+        self.assertIsNone(service.problem)  # one is enough
+        self.assertEqual(await self.finder_says(), self.finder_answer(self.port))
+        await service.set_on(False)
+        both = self.service_on((self.port,), (self.finder_port, _free_port(socket.SOCK_DGRAM)))
+        await both.set_on(True)
+        self.assertEqual(len(both._finders), 2)
+
+
+class NetworkHintTests(ServiceCase):
+    def service_checking(self, check: NetworkCheck | None) -> PhoneService:
+        service = PhoneService(
+            self.settings, self.paths, self.profiles, routes_factory=dict, port=self.port,
+            finder_port=self.finder_port, network_check=check,
+        )  # fmt: skip
+        self.addAsyncCleanup(service.aclose)
+        return service
+
+    async def test_the_hint_says_what_windows_keeps_out(self) -> None:
+        await self.service.check_network()
+        self.assertIsNone(self.service.network_hint)  # can't tell: nothing said
+        heard: list[None] = []
+        self.service.subscribe(lambda: heard.append(None))
+        self.network = NetworkFacts(public=True, blocked=False)
+        await self.service.check_network()
+        self.assertEqual(self.service.network_hint, PUBLIC_NETWORK_TEXT)
+        self.assertEqual(len(heard), 1)
+        self.network = NetworkFacts(public=False, blocked=True)
+        await self.service.check_network()
+        self.assertEqual(self.service.network_hint, FIREWALL_BLOCKS_TEXT)
+        self.network = NetworkFacts(public=True, blocked=True)
+        await self.service.check_network()
+        self.assertEqual(
+            self.service.network_hint, PUBLIC_NETWORK_TEXT + "\n" + FIREWALL_BLOCKS_TEXT
+        )
+        self.network = NetworkFacts(public=False, blocked=False)
+        await self.service.check_network()
+        self.assertIsNone(self.service.network_hint)
+        # Windows' own question calls AirGrabber "Python": the hint and the first line say so.
+        for text in (FIREWALL_BLOCKS_TEXT, FIREWALL_TEXT):
+            self.assertIn("\u201cPython\u201d", text)
+        self.assertIn("Private network", PUBLIC_NETWORK_TEXT)
+
+    async def test_one_question_at_a_time(self) -> None:
+        asked = asyncio.Event()
+        answer: asyncio.Future[NetworkFacts | None] = asyncio.get_running_loop().create_future()
+
+        async def slow() -> NetworkFacts | None:
+            self.network_checks += 1
+            asked.set()
+            return await answer
+
+        service = self.service_checking(slow)
+        first = asyncio.create_task(service.check_network())
+        await asyncio.wait_for(asked.wait(), 5)
+        second = asyncio.create_task(service.check_network())
+        answer.set_result(NetworkFacts(public=True, blocked=False))
+        await asyncio.gather(first, second)
+        self.assertEqual(self.network_checks, 1)
+        self.assertEqual(service.network_hint, PUBLIC_NETWORK_TEXT)
+
+    async def test_a_failing_check_says_nothing(self) -> None:
+        async def broken() -> NetworkFacts | None:
+            raise RuntimeError("C:\\secret\\python.exe")
+
+        service = self.service_checking(broken)
+        with self.assertLogs("app.services.phone.service", "WARNING") as logs:
+            await service.check_network()
+        self.assertIsNone(service.network_hint)
+        self.assertNotIn("secret", "\n".join(logs.output))
+
+    async def test_without_a_check_nothing_is_asked(self) -> None:
+        service = self.service_checking(None)
+        await service.check_network()
+        self.assertIsNone(service.network_hint)
 
 
 class OnOffTests(ServiceCase):
@@ -964,6 +1181,32 @@ class PageTests(PageCase):
             _, page = self.box()
             self.assertIn(PORT_BUSY_TEXT, self.shown(page))
             self.assertNotIn(CONNECT_TEXT, self.shown_buttons(page))
+
+    async def test_the_network_hint_shows_while_it_is_on(self) -> None:
+        self.network = NetworkFacts(public=True, blocked=False)
+        _, page = self.box()
+        await self.settle()
+        self.assertEqual(self.network_checks, 0)  # off: Windows isn't asked
+        self.assertNotIn(PUBLIC_NETWORK_TEXT, self.shown(page))
+        await self.service.set_on(True)
+        box, page = self.box()  # the page opened again: Windows is asked again
+        await box.settled()
+        self.assertEqual(self.network_checks, 1)
+        self.assertIn(PUBLIC_NETWORK_TEXT, self.shown(page))
+        self.network = NetworkFacts(public=False, blocked=True)  # now Private, but blocked
+        await self.service.check_network()
+        self.assertNotIn(PUBLIC_NETWORK_TEXT, self.shown(page))
+        self.assertIn(FIREWALL_BLOCKS_TEXT, self.shown(page))
+        await self.service.set_on(False)
+        self.assertNotIn(FIREWALL_BLOCKS_TEXT, self.shown(page))
+
+    async def test_turning_it_on_asks_windows(self) -> None:
+        self.network = NetworkFacts(public=False, blocked=True)
+        box, page = self.box()
+        box.switch.toggle()
+        await box.settled()
+        self.assertEqual(self.network_checks, 1)
+        self.assertIn(FIREWALL_BLOCKS_TEXT, self.shown(page))
 
     async def test_a_remade_certificate_shows_plainly(self) -> None:
         await self.service.set_on(True)

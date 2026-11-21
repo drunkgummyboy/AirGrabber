@@ -8,7 +8,8 @@ shelves, `"folders": true` in hello).
 - `GET /v1/library/<show key>/episodes`: a show's episode files, by season and number, the
   specials (season 0) last, each named as TMDB names it in the app's language ("" otherwise).
 - `GET /v1/library/<video key>/file`: the best copy that is there now (to copy to the phone),
-  `Range: bytes=N-` from byte N; none to be reached: 404 `no_longer_there`.
+  `Range: bytes=N-` from byte N; none there: 404 `no_longer_there`; a share that didn't answer
+  in time: 504 `folder_timeout`.
 - `GET /v1/library/<video key>/subtitles` and `…/subtitles/<id>` (`?as=vtt`: an SRT as WebVTT):
   the subtitle files next to that copy (sidecars.py), in the order the folder gave them.
 - `POST /v1/library/<video key>/play-link`: a play link (play_links.py) to that copy and its SRT
@@ -28,7 +29,9 @@ watched mark is the phone's own person's (`PairedPhone.profile_id`), never the P
 The lists come from the database and TMDB. Only `file`, the subtitles and play links touch the
 disk (often a NAS's share, which may be asleep): every stat, listing and read in a worker thread
 under READ_TIMEOUT_S (part 1's), so the window never waits for a share; one that doesn't answer
-in time is 404 `no_longer_there`. They answer whenever the folders are on (`folders_on`), with or
+in time is 504 `folder_timeout` (try again), a file that is really gone 404 `no_longer_there`
+(docs/companion/2026-11-21-portability-contract.md). A play link names the port the link server
+got and says the video's codecs (a quick ffprobe, `probe`; null when it can't say). They answer whenever the folders are on (`folders_on`), with or
 without Plex; with the folders off they answer 409 `plex_library` (the phone refreshes hello; the
 phone connection's gate answers first without any library). The log gets counts and the kind
 of a failure only, never a title, a key, a path, a link or an address.
@@ -40,10 +43,10 @@ import asyncio
 import logging
 import os
 import re
-from collections.abc import Awaitable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any, TypeGuard, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard, TypeVar
 from urllib.parse import quote
 
 from app.database import LibraryFileRepository, WatchPlaceRepository
@@ -66,7 +69,7 @@ from app.services.folder_library.sidecars import CONTENT_TYPES, VTT_TYPE, Sideca
 from app.services.library_source import folders_on
 from app.services.phone.coming_up import safe_poster
 from app.services.phone.play_links import MAX_SUBTITLE_BYTES as MAX_SUBTITLE_BYTES
-from app.services.phone.play_links import PLAY_PORT, PlayLinks, play_url_host, subtitle_bytes
+from app.services.phone.play_links import PlayLinks, not_serving, play_url_host, subtitle_bytes
 from app.services.phone.play_links import file_size as _size_of
 from app.services.phone.play_links import video_type as _video_type
 from app.services.phone.server import (
@@ -78,13 +81,20 @@ from app.services.phone.server import (
     Route,
     bad_request,
     error_reply,
+    folder_timeout,
     range_start,
 )
 from app.services.phone.suggestions import split_genres
 from app.services.settings import SettingsService
 from app.services.tmdb import TMDBClient, TMDBError
 
+if TYPE_CHECKING:
+    from app.services.phone.cast_stream import Probed
+
 log = logging.getLogger(__name__)
+
+# A quick ffprobe of a file (CastStreams.quick_probe): None when it can't say.
+Probe = Callable[[Path], Awaitable["Probed | None"]]
 
 PLEX_LIBRARY_TEXT = N_("AirGrabber's library is Plex now, so pull down to refresh.")
 GONE_TEXT = N_("That isn't in your folders any more, so refresh the list.")
@@ -97,6 +107,10 @@ _STREAMED_FORMATS = ("srt", "vtt")  # the subtitles a play link carries, as VTT
 _SUBTITLE_ID = re.compile(r"0|[1-9][0-9]{0,5}")
 _MOST_MS = 10**10  # a place's or length's milliseconds: over 115 days, more than any video
 _DONE = Reply(204, {})
+
+NoCopy = Literal["gone", "timed_out"]  # why `find_copy` found none
+GONE: NoCopy = "gone"
+TIMED_OUT: NoCopy = "timed_out"
 
 T = TypeVar("T")
 _Copies = dict[tuple[int, int], list[LibraryFile]]  # an episode's copies by (season, episode)
@@ -130,6 +144,11 @@ def video_json(
 
 def _gone() -> Reply:
     return error_reply(404, "no_longer_there", t(GONE_TEXT))
+
+
+def _no_copy(why: NoCopy) -> Reply:
+    """No copy to send: 504 `folder_timeout` when a share didn't answer in time, else 404."""
+    return folder_timeout() if why == TIMED_OUT else _gone()
 
 
 def _grouped(files: Iterable[LibraryFile]) -> dict[tuple[FileKind, int], list[LibraryFile]]:
@@ -212,9 +231,10 @@ class PhoneLibrary:
         tmdb: TMDBClient,
         *,
         play_links: PlayLinks | None = None,
+        probe: Probe | None = None,
     ) -> None:
         """`play_links`: the link server's links (one, shared with the phone connection, which
-        runs it)."""
+        runs it). `probe`: a quick ffprobe for a play link's codecs (none: they are null)."""
         self._settings = settings
         self._playing = playing
         self._files = files
@@ -222,6 +242,7 @@ class PhoneLibrary:
         self._discovery = discovery
         self._tmdb = tmdb
         self._play_links = play_links if play_links is not None else PlayLinks()
+        self._probe = probe
 
     def routes(self) -> dict[tuple[str, str], Route]:
         return {
@@ -309,8 +330,8 @@ class PhoneLibrary:
 
     async def _file(self, request: Request) -> Reply | FileReply:
         found = await self._reachable_copy(request.query.get("key", ""))
-        if found is None:
-            return _gone()
+        if not isinstance(found, tuple):
+            return _no_copy(found)
         path, size = found
         start = range_start(request.headers, size)
         if start is False:
@@ -321,8 +342,8 @@ class PhoneLibrary:
 
     async def _subtitles(self, request: Request) -> Reply:
         found = await self._subtitles_of(request.query.get("key", ""))
-        if found is None:
-            return _gone()
+        if not isinstance(found, list):
+            return _no_copy(found)
         return Reply(
             200,
             {
@@ -343,8 +364,10 @@ class PhoneLibrary:
         if as_vtt and request.query["as"] != "vtt":
             return bad_request()
         found = await self._subtitles_of(request.query.get("key", ""))
+        if not isinstance(found, list):
+            return _no_copy(found)
         wanted = request.query.get("id", "")
-        if found is None or not _SUBTITLE_ID.fullmatch(wanted) or int(wanted) >= len(found):
+        if not _SUBTITLE_ID.fullmatch(wanted) or int(wanted) >= len(found):
             return _gone()
         sidecar = found[int(wanted)]
         if as_vtt and sidecar.format not in ("srt", "vtt"):
@@ -353,7 +376,10 @@ class PhoneLibrary:
         try:
             async with asyncio.timeout(READ_TIMEOUT_S):
                 data = await asyncio.to_thread(_subtitle_bytes, sidecar.path, convert=convert)
-        except (OSError, TimeoutError, ValueError) as exc:
+        except TimeoutError:  # the share didn't answer in time: the file may well be there
+            log.info("Phone library: a subtitle file didn't answer in time")
+            return folder_timeout()
+        except (OSError, ValueError) as exc:
             log.info("Phone library: a subtitle file can't be read: %s", type(exc).__name__)
             return _gone()
         if data is None:
@@ -366,19 +392,29 @@ class PhoneLibrary:
         if host is None:
             return bad_request()  # the phone server always knows it: can't happen through it
         found = await self._reachable_copy(request.query.get("key", ""))
-        if found is None:
-            return _gone()
+        if not isinstance(found, tuple):
+            return _no_copy(found)
         path, _size = found
-        found_subtitles = await self._sidecars_of(path)
+        found_subtitles, probed = await asyncio.gather(self._sidecars_of(path), self._codecs(path))
+        port = self._play_links.port
+        if port is None:  # its port couldn't be bound (or it stopped meanwhile)
+            return not_serving()
         # All of them, so a subtitle's place in the link is its id in `subtitles`; the link
         # server sends only an SRT or VTT.
         token, expires = self._play_links.make(path, [one.path for one in found_subtitles])
-        base = f"http://{host}:{PLAY_PORT}/p/{token}"
+        base = f"http://{host}:{port}/p/{token}"
         log.info("Phone library: a play link made")
         return Reply(
             200,
             {
                 "url": f"{base}/video{quote(path.suffix.lower())}",
+                # For the phone's choice (docs/companion/2026-11-21-portability-contract.md):
+                # null each when ffprobe can't say (no video tools, or not in time).
+                "video_codec": (probed.video_codec or None) if probed is not None else None,
+                "height": probed.height if probed is not None else None,
+                "audio_codec": (
+                    probed.sound_codec(probed.default_sound) if probed is not None else None
+                ),
                 "subtitles": [
                     {
                         "id": str(number),
@@ -476,10 +512,20 @@ class PhoneLibrary:
         place = await self._places.get(profile_id, item)
         return video_json(item, ranked(files)[0], place, name)
 
-    async def _reachable_copy(self, item: str) -> tuple[Path, int] | None:
-        """The best copy of this video (`item`: its key) that is there now, with its size; None
-        when it has none, or none answers (`reachable_copy`)."""
-        return await reachable_copy(await self._playing.copies_of(item))
+    async def _reachable_copy(self, item: str) -> tuple[Path, int] | NoCopy:
+        """The best copy of this video (`item`: its key) that is there now, with its size; else
+        why not (`find_copy`)."""
+        return await find_copy(await self._playing.copies_of(item))
+
+    async def _codecs(self, path: Path) -> Probed | None:
+        """A quick ffprobe's word on the video (None: no probe, or it couldn't say)."""
+        if self._probe is None:
+            return None
+        try:
+            return await self._probe(path)
+        except Exception as exc:  # the codecs are extras: the link goes out without them
+            log.warning("Phone library: a video's codecs couldn't be read: %s", type(exc).__name__)
+            return None
 
     async def _sidecars_of(self, path: Path) -> list[Sidecar]:
         """The subtitle files next to the video at `path`, in the order its folder lists them;
@@ -492,10 +538,10 @@ class PhoneLibrary:
             return []
         return sidecars(path, names)
 
-    async def _subtitles_of(self, item: str) -> list[Sidecar] | None:
-        """The subtitle files next to the copy `file` would send; None when there is none."""
+    async def _subtitles_of(self, item: str) -> list[Sidecar] | NoCopy:
+        """The subtitle files next to the copy `file` would send; why not when there is none."""
         found = await self._reachable_copy(item)
-        return await self._sidecars_of(found[0]) if found is not None else None
+        return await self._sidecars_of(found[0]) if isinstance(found, tuple) else found
 
     # -- helpers ---------------------------------------------------------------------------------
 
@@ -581,27 +627,42 @@ class PhoneLibrary:
 
 async def reachable_copy(copies: Iterable[str]) -> tuple[Path, int] | None:
     """The first of these copies (best first) that is there now, with its size; None when there
-    are none, or none answers. Every copy is stat'ed at once, each in a worker thread, and all
-    within READ_TIMEOUT_S: the best one that answered in time wins. Also the phone-sized copies'
-    way to a folder film's own file (`PhoneCopies`' `local_source`, built in app/services)."""
+    are none, or none answers (`find_copy`). Also the phone-sized copies' way to a folder film's
+    own file (`PhoneCopies`' `local_source`, built in app/services)."""
+    found = await find_copy(copies)
+    return found if isinstance(found, tuple) else None
+
+
+async def find_copy(copies: Iterable[str]) -> tuple[Path, int] | NoCopy:
+    """The first of these copies (best first) that is there now, with its size; else why not:
+    TIMED_OUT when one of them didn't answer in time (a share asleep: the file may be there),
+    GONE when each answered that it isn't (or there are none). Every copy is stat'ed at once,
+    each in a worker thread, and all within READ_TIMEOUT_S: the best one that answered in time
+    wins."""
     paths = [Path(one) for one in copies]
     if not paths:
-        return None
+        return GONE
     loop = asyncio.get_running_loop()
     deadline = loop.time() + READ_TIMEOUT_S
     looks = [asyncio.ensure_future(asyncio.to_thread(_size_of, path)) for path in paths]
+    timed_out = False
     try:
         for path, look in zip(paths, looks, strict=True):
             if not look.done():
                 await asyncio.wait((look,), timeout=max(0.0, deadline - loop.time()))
+            timed_out = timed_out or _timed_out(look)
             size = _size_found(look)
             if size is not None:
                 return path, size
     finally:
         for look in looks:  # a stat past its limit ends on its own: its outcome isn't wanted
             look.add_done_callback(_retrieve)
-    log.info("Phone library: none of a video's %d copies can be reached", len(paths))
-    return None
+    log.info(
+        "Phone library: none of a video's %d copies can be reached (%s)",
+        len(paths),
+        "timed out" if timed_out else "gone",
+    )
+    return TIMED_OUT if timed_out else GONE
 
 
 def _person(request: Request) -> int:
@@ -638,6 +699,21 @@ def _size_found(look: asyncio.Future[int | None]) -> int | None:
         log.info("Phone library: a video's copy can't be reached: %s", type(failed).__name__)
         return None
     raise failed
+
+
+_SEMAPHORE_TIMEOUT = 121  # Windows' ERROR_SEM_TIMEOUT: a share that didn't answer in time
+
+
+def _timed_out(look: asyncio.Future[int | None]) -> bool:
+    """The stat didn't end in time, or the share itself said it timed out."""
+    if not look.done():
+        return True
+    if look.cancelled():
+        return False
+    failed = look.exception()
+    return isinstance(failed, TimeoutError) or (
+        isinstance(failed, OSError) and getattr(failed, "winerror", None) == _SEMAPHORE_TIMEOUT
+    )
 
 
 def _retrieve(look: asyncio.Future[int | None]) -> None:

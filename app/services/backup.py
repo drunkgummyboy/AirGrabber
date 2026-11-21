@@ -55,7 +55,7 @@ from pydantic import SecretStr, ValidationError
 from app import __version__
 from app.database import BackupRepository
 from app.i18n import t
-from app.models import Settings
+from app.models import Settings, stored_settings
 from app.models.backup import (
     FILE_SUFFIX,
     FORMAT_NAME,
@@ -94,8 +94,9 @@ NOT_SECRET_FIELDS: frozenset[str] = frozenset({"excluded_keywords"})
 SECRET_NAME = re.compile(r"key|password|token|secret", re.IGNORECASE)
 # This PC's own secrets: never in a backup, not even with "Include keys and passwords", and a
 # load keeps this PC's (they are in MACHINE_FIELDS). The Plex token belongs to this PC's
-# `plex_client_id` (app/services/plex.py): another PC connects to Plex itself.
-MACHINE_SECRETS: frozenset[str] = frozenset({"plex_token"})
+# `plex_client_id` (app/services/plex.py): another PC connects to Plex itself. A shared or Plex
+# Home server's own token (`plex_server_token`) is the same kind of secret.
+MACHINE_SECRETS: frozenset[str] = frozenset({"plex_token", "plex_server_token"})
 # This PC's own markers, never in a backup (a load keeps this PC's values).
 MACHINE_FIELDS: frozenset[str] = frozenset(
     {
@@ -125,6 +126,7 @@ MACHINE_FIELDS: frozenset[str] = frozenset(
         "phone_devices",
         "phone_pc_id",
         "phone_fingerprint",
+        "phone_port",
         "phone_shortlist",
         "phone_shortlist_version",
         "phone_orders",
@@ -202,9 +204,11 @@ def has_secrets(stored: Mapping[str, Any]) -> bool:
 
 def valid_settings(stored: Mapping[str, Any]) -> Settings:
     """A backup's settings as a Settings: a value that doesn't validate (a newer version's,
-    a damaged one) is its default, as SettingsRepository.load does."""
+    a damaged one) is its default, as SettingsRepository.load does; one it lacks what it meant
+    then (`stored_settings`)."""
+    stored = stored_settings(stored)
     try:
-        return Settings.model_validate(dict(stored))
+        return Settings.model_validate(stored)
     except ValidationError as exc:
         invalid = {str(error["loc"][0]) for error in exc.errors() if error["loc"]}
         log.warning("Ignoring invalid settings in the backup: %s", ", ".join(sorted(invalid)) or "?")

@@ -70,6 +70,9 @@ FILM_PAGE_PARTS = "credits,videos,release_dates,external_ids"
 # TMDB's lists: 20 results a page, and no page after 500 (a later one is refused).
 PAGE_SIZE = 20
 MAX_PAGE = 500
+# The country whose release dates, certifications and digital shelves count: the US for
+# everyone (the owner, 2026-11-21: not Windows' region).
+DEFAULT_REGION = "US"
 
 
 class TMDBError(Exception):
@@ -132,7 +135,7 @@ class TMDBClient:
         max_concurrent: int = 6,
         retry_delay: float = 1.0,
         language: str = "en-US",
-        region: str = "US",
+        region: str = DEFAULT_REGION,
     ) -> None:
         """`api_key` is called for every request, so a key changed in Settings applies at once."""
         if max_concurrent < 1:

@@ -35,6 +35,7 @@ from app.models import (
     Settings,
     Show,
     WatchlistEntry,
+    stored_settings,
 )
 from app.models.folder_library import FileKind, LibraryFile, WatchPlace
 from app.models.plex import PlexCounts, PlexFilms, PlexLibrary, PlexScan, PlexTitle, PlexShows
@@ -2604,7 +2605,8 @@ class SettingsRepository:
 
     async def load(self) -> Settings:
         rows = await self._db.fetch_all("SELECT key, value FROM settings")
-        stored = {row["key"]: json.loads(row["value"]) for row in rows}
+        # A key the rows lack means what it meant when they were stored (`stored_settings`).
+        stored = stored_settings({row["key"]: json.loads(row["value"]) for row in rows})
         try:
             return Settings.model_validate(stored)
         except ValidationError as exc:

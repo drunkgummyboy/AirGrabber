@@ -11,12 +11,19 @@ broken copy resumes; or a `DataReply`: bytes already read (a subtitle).
 
 `Request.local_address` is the address the phone reached this PC on (play links are made on it).
 The play link server (play_links.py) shares the reading of a request's head (`parse_head`),
-`range_span` (exact `bytes=N-M`, as TVs ask), `file_head`, `send_file` and `close_writer`.
+`range_span` (exact `bytes=N-M`, as TVs ask), `file_head`, `send_file`, `close_writer` and
+`listen`.
+
+Ports (docs/companion/2026-11-21-portability-contract.md): PORTS in order, 58760 first (what
+older phones know), then 47760 (outside Windows' dynamic range, which Hyper-V, WSL2 and Docker
+reserve pieces of: a bind there fails with "access denied"), then a free port Windows picks (0).
+`listen` takes the first that can be bound; the service remembers it and tries it first next time.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import json
 import logging
@@ -30,13 +37,14 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal, NamedTuple, cast
 from urllib.parse import parse_qsl, unquote
 
-from app.i18n import t
+from app.i18n import N_, t
 from app.models import PairedPhone
 from app.services.phone.devices import DeviceStore
 
 log = logging.getLogger(__name__)
 
 PORT = 58760
+PORTS = (PORT, 47760, 0)  # tried in this order (0: a free port Windows picks)
 READ_TIMEOUT = 10.0  # seconds for a whole request to arrive; also for its answer to leave
 TLS_TIMEOUT = 10.0  # seconds for the TLS greeting and goodbye, each
 LINGER_TIME = 2.0  # seconds to wait for what's still coming after an early answer
@@ -51,6 +59,8 @@ _PUBLIC_ROUTES = frozenset({("POST", "/v1/pair")})
 # (docs/folder-library/2026-11-16-companion-contract.md).
 CAPABILITY_HEADER = "x-companion-can"
 FOLDER_LIBRARY = "folder-library"  # it knows the folder library's routes and answers
+# ▶ Play's own sentence for it too (app/services/playback.py's TIMED_OUT_TEXT): one Dutch entry.
+FOLDER_TIMEOUT_TEXT = N_("The folder didn't answer in time. Try again.")
 
 _HOME_NETWORKS = tuple(
     ipaddress.ip_network(network)
@@ -59,9 +69,11 @@ _HOME_NETWORKS = tuple(
         "172.16.0.0/12",
         "192.168.0.0/16",
         "169.254.0.0/16",  # a link without a router
+        "100.64.0.0/10",  # carrier-grade NAT: Tailscale, some providers' home networks
         "127.0.0.0/8",
         "::1/128",
         "fe80::/10",
+        "fc00::/7",  # IPv6 unique local addresses (a home router's own IPv6 network)
     )
 )
 
@@ -80,6 +92,7 @@ ErrorCode = Literal[
     "no_tmdb_key",  # the actor and title pages: no TMDB key in Settings (person.py, title.py)
     "tmdb_key_refused",  # the actor and title pages: TMDB refuses the key in Settings
     "no_ffmpeg",  # Cast sound streams: MediaForge's ffmpeg isn't on this PC (cast_stream.py)
+    "folder_timeout",  # 504: a folder (a share asleep) didn't answer in time; try again
 ]
 
 
@@ -217,6 +230,12 @@ def error_reply(status: int, code: ErrorCode, message: str) -> Reply:
     return Reply(status, {"error": code, "message": message})
 
 
+def folder_timeout() -> Reply:
+    """504: the folder holding the file (often a NAS's share, asleep) didn't answer within the
+    folder library's time limit; unlike `no_longer_there`, the file may well be there."""
+    return error_reply(504, "folder_timeout", t(FOLDER_TIMEOUT_TEXT))
+
+
 def is_home_address(ip: str) -> bool:
     try:
         address = ipaddress.ip_address(ip)
@@ -225,6 +244,43 @@ def is_home_address(ip: str) -> bool:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
     return any(address in network for network in _HOME_NETWORKS)
+
+
+Opener = Callable[[str | None, int], Awaitable[asyncio.Server]]  # (host, port) -> listening
+
+
+def bound_port(server: asyncio.Server) -> int:
+    """The port a server listens on (its first socket's)."""
+    return int(server.sockets[0].getsockname()[1])
+
+
+async def listen(open_on: Opener, ports: Sequence[int]) -> tuple[asyncio.Server, int]:
+    """Listen on every address of this PC on the first of `ports` that can be bound (0: a free
+    port Windows picks, the same one for IPv4 and IPv6): the server and its port. Raises the last
+    OSError when none can be."""
+    failed: OSError | None = None
+    for port in ports:
+        try:
+            if port == 0:
+                return await _on_a_free_port(open_on)
+            return await open_on(None, port), port
+        except OSError as exc:
+            failed = exc
+    raise failed if failed is not None else OSError(errno.EADDRINUSE, "no port to try")
+
+
+async def _on_a_free_port(open_on: Opener) -> tuple[asyncio.Server, int]:
+    # Port 0 on every address would give IPv4 and IPv6 a port each: one is found on IPv4, then
+    # taken on all of them; if that fails (just taken), IPv4 alone on a new free one.
+    probe = await open_on("0.0.0.0", 0)
+    port = bound_port(probe)
+    probe.close()
+    await probe.wait_closed()
+    try:
+        return await open_on(None, port), port
+    except OSError:
+        server = await open_on("0.0.0.0", 0)
+        return server, bound_port(server)
 
 
 class Refused(Exception):
@@ -422,6 +478,7 @@ class PhoneServer:
         self._cert = cert
         self._key = key
         self._server: asyncio.Server | None = None
+        self.port: int | None = None  # the port it listens on, while it runs
         self._connections: set[asyncio.Task[None]] = set()
         self._next_warning: dict[str, float] = {}
 
@@ -429,22 +486,30 @@ class PhoneServer:
     def running(self) -> bool:
         return self._server is not None
 
-    async def start(self, port: int = PORT) -> None:
-        """Listen on every address of this PC. Raises OSError when that fails (port in use)."""
+    async def start(self, ports: int | Sequence[int] = PORTS) -> None:
+        """Listen on every address of this PC, on the first of `ports` that can be bound
+        (`listen`). Raises OSError when none can be (each in use, or kept by Windows)."""
         if self._server is not None:
             return
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(self._cert, self._key)
+
         # TLS starts per connection, in _serve: whoever gets refused doesn't even get a handshake.
-        self._server = await asyncio.start_server(
-            partial(self._accept, context), host=None, port=port, limit=_MAX_HEAD
+        async def open_on(host: str | None, port: int) -> asyncio.Server:
+            return await asyncio.start_server(
+                partial(self._accept, context), host=host, port=port, limit=_MAX_HEAD
+            )
+
+        self._server, self.port = await listen(
+            open_on, (ports,) if isinstance(ports, int) else ports
         )
-        log.info("Phone connection listening on port %d", port)
+        log.info("Phone connection listening on port %d", self.port)
 
     async def stop(self) -> None:
         """Stop listening and drop every open connection, also those still being worked on."""
         server, self._server = self._server, None
+        self.port = None
         if server is None:
             return
         server.close()

@@ -1,9 +1,10 @@
 """Plex (app/services/plex.py): plex.tv's and the Plex Media Server's JSON → models.
 
 The wire models validate the replies at the boundary (unknown fields ignored); the domain models
-are what the services hand on and the Settings box and the connect window show. No model ever
-holds the Plex token: it lives in the settings (`plex_token`) and travels in the X-Plex-Token
-header only.
+are what the services hand on and the Settings box and the connect window show. No domain model
+ever holds the Plex token: it lives in the settings (`plex_token`, and a server that isn't the
+account's own its own `plex_server_token`) and travels in the X-Plex-Token header only; the one
+wire model that brings a server's token from plex.tv keeps it a SecretStr.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr
 
 from app.models.domain import DomainModel
 from app.models.types import UtcDatetime
@@ -68,6 +69,9 @@ class PlexResourceReply(_Wire):
     client_identifier: str = Field(alias="clientIdentifier")
     provides: str = ""
     owned: bool = False
+    home: bool = False  # a server of the user's Plex Home (not the account's own)
+    # The token requests to this server take (a shared or Plex Home server's own; a secret).
+    access_token: SecretStr | None = Field(default=None, alias="accessToken")
     connections: list[PlexConnectionReply] = Field(default_factory=list)
 
     @property
@@ -204,17 +208,24 @@ class PlexPin(DomainModel):
 
 
 class PlexConnection(DomainModel):
+    """One way to reach a server. `plain`: AirGrabber's own last try for a local connection,
+    http://address:port (a router that blocks *.plex.direct names, DNS-rebinding protection)."""
+
     uri: str
     local: bool = False
     https: bool = False
+    plain: bool = False
 
 
 class PlexServer(DomainModel):
-    """A Plex Media Server the account owns, with the ways to reach it plex.tv lists."""
+    """A Plex Media Server the account may use, with the ways to reach it plex.tv lists.
+    `owned`: the account's own (else a Plex Home or shared server, reached with its own token,
+    which no model holds)."""
 
     machine_id: str
     name: str
     connections: tuple[PlexConnection, ...] = ()
+    owned: bool = True
 
 
 LibraryKind = Literal["show", "movie"]
@@ -232,7 +243,7 @@ class PlexLibrary(DomainModel):
 class PlexProblem(StrEnum):
     UNREACHABLE = "unreachable"  # plex.tv or the server didn't answer
     SIGNED_OUT = "signed_out"  # the token was refused: connect again
-    NO_SERVER = "no_server"  # the account owns no server (or the chosen one is gone)
+    NO_SERVER = "no_server"  # the account can use no server (or the chosen one is gone)
     CHOOSE_SERVER = "choose_server"  # several servers: the user picks one
     FAILED = "failed"  # an answer that didn't read
 

@@ -678,7 +678,7 @@ class LocalQBittorrentTests(BackupTestCase):
             current,
             {
                 "download_mode": "app",
-                "remote_kind": "synology",  # the default: nothing set up here
+                "remote_kind": "qbittorrent",  # new settings' default: nothing set up here
                 "remote_url": "",
                 "remote_username": "",
                 "remote_password": "",

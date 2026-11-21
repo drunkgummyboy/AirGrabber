@@ -493,7 +493,7 @@ class RemoteFallbackTests(DownloadTestCase):
 
     async def test_nothing_cached_and_no_remote_program(self) -> None:
         # Download Station without an account doesn't count as set up.
-        await self.settings.update(remote_url="http://192.168.1.20:5000")
+        await self.settings.update(remote_kind=RemoteKind.SYNOLOGY, remote_url="http://192.168.1.20:5000")
         with self.assertRaises(ReleaseError) as caught:
             await self.service.grab(release(), EPISODE)
         self.assertEqual(str(caught.exception), NO_REMOTE_FALLBACK)
@@ -892,7 +892,9 @@ class RemoteModeTests(DownloadTestCase):
         self.assertEqual(client.magnets, [f"magnet:?xt=urn:btih:{HASH}&dn=Show%20%26%20Tell"])
 
     async def test_not_set_up_fails_before_any_request(self) -> None:
-        await self.settings.update(remote_url="http://192.168.1.20:5000")  # no DSM account
+        await self.settings.update(
+            remote_kind=RemoteKind.SYNOLOGY, remote_url="http://192.168.1.20:5000"
+        )  # no DSM account
         self.serve(DIRECT_URL, TORRENT)
         with self.assertRaises(GrabError) as caught:
             await self.service.grab(release(download_url=DIRECT_URL), EPISODE)
@@ -1117,13 +1119,15 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
         asyncio.get_running_loop().slow_callback_duration = 1.0  # real CA bundle load
         services = await Services.create(AppPaths(Path(tmp.name)))
         try:
+            # The films' release dates and certifications are the US's, for everyone.
+            self.assertEqual(services.discovery._tmdb._region, "US")
             self.assertIsInstance(services.downloads, DownloadService)
             self.assertIsInstance(services.remote, RemoteDownloads)
             self.assertIs(services.downloads._remote, services.remote)
             self.assertIs(services.station, services.remote)  # main_window.py's older name
             self.assertIs(services.downloads._http, services._http)
             self.assertFalse(services.remote.configured)
-            self.assertIs(services.remote.kind, RemoteKind.SYNOLOGY)
+            self.assertIs(services.remote.kind, RemoteKind.QBITTORRENT)  # a new install's
             self.assertEqual(services.downloads._torrent_cache, Path(tmp.name) / "torrents")
             self.assertIsInstance(services.torrent_app, TorrentAppService)
         finally:

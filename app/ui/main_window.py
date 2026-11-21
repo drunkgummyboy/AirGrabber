@@ -115,7 +115,7 @@ from app.ui.spotlight_band import SpotlightBand
 from app.ui.sync_loader import PLEX_SYNC_TEXT, SyncLoader
 from app.ui.tasks import on_task_error, spawn
 from app.ui.title_info import SendToPhone
-from app.ui.tooltip import add_tooltip
+from app.ui.tooltip import add_tooltip, work_area
 from app.ui.torrent_app_status import QBITTORRENT
 from app.ui.tray_menu import downloads_line, pause_until, resume_text, today_line
 from app.ui.tray import TrayHost
@@ -214,6 +214,7 @@ _OFF_PAGE_SETTINGS = frozenset(
         # reload the pages themselves (through the library's listeners, app/services/plex.py).
         "plex_client_id",
         "plex_token",
+        "plex_server_token",
         "plex_server_id",
         "plex_server_name",
         "plex_server_uri",
@@ -246,6 +247,7 @@ _OFF_PAGE_SETTINGS = frozenset(
         "phone_devices",
         "phone_pc_id",
         "phone_fingerprint",
+        "phone_port",
     }
 )
 
@@ -257,6 +259,39 @@ def settings_affect_pages(previous: Settings, updated: Settings) -> bool:
         for name in Settings.model_fields
         if name not in _OFF_PAGE_SETTINGS
     )
+
+
+# The window's size (logical units): what Windows' Restore button gives, and the smallest it may
+# be where its screen has room (the band's top row fits narrower too: it tightens, `band_layout`).
+WINDOW_SIZE = (1650, 900)
+MIN_WINDOW_SIZE = (1220, 640)
+# Windows' frame around the window's content (logical): its borders, and the title bar on top.
+FRAME_WIDTH, FRAME_HEIGHT = 16, 40
+ScreenArea = tuple[int, int, int, int]  # left, top, right, bottom (physical pixels)
+
+
+def window_minimum(area: ScreenArea, scaling: float) -> tuple[int, int]:
+    """The window's smallest size (logical): MIN_WINDOW_SIZE, less where the work area `area`
+    of its screen (physical) is smaller at Windows' `scaling`, so that it fits there with its
+    frame (1366×768 at 125 %, 1920×1080 at 175 %, …)."""
+    left, top, right, bottom = area
+    width = int((right - left) / scaling) - FRAME_WIDTH
+    height = int((bottom - top) / scaling) - FRAME_HEIGHT
+    return max(1, min(MIN_WINDOW_SIZE[0], width)), max(1, min(MIN_WINDOW_SIZE[1], height))
+
+
+def window_place(
+    area: ScreenArea, scaling: float, width: int, height: int
+) -> tuple[int, int, int, int]:
+    """A `width` × `height` (logical) window, made smaller where the work area `area` (physical)
+    hasn't the room, centred on it: (width, height) logical, (x, y) physical (CTk scales a
+    geometry's size, not its place)."""
+    left, top, right, bottom = area
+    width = max(1, min(width, int((right - left) / scaling) - 40))
+    height = max(1, min(height, int((bottom - top) / scaling) - 40))
+    x = left + (right - left - round(width * scaling)) // 2
+    y = top + (bottom - top - round(height * scaling)) // 2
+    return width, height, max(left, x), max(top, y)
 
 
 # Widget classes the user types in: F5 leaves them alone (Ctrl+F still goes to the search box).
@@ -549,8 +584,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
 
         self.title(t("{app} — Track your shows. Grab your movies.", app=APP_NAME))
         set_window_icon(self)
-        self._place(1650, 900)
-        self.minsize(1220, 640)  # narrowest width at which the band's top row still fits
+        self._place(*WINDOW_SIZE)  # and its smallest size, by its screen
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)  # the page
 
@@ -708,18 +742,27 @@ class MainWindow(AsyncCTk, ctk.CTk):
     # -- layout ------------------------------------------------------------------------------
 
     def _place(self, width: int, height: int) -> None:
-        """Centre a `width`×`height` (unscaled) window on the primary screen.
+        """Centre a `width`×`height` (unscaled) window on the primary screen's work area, and
+        keep its smallest size within that area (`window_minimum`).
 
-        CTk multiplies width/height by the DPI factor but not x/y, and on Windows
-        winfo_screenwidth() reports unscaled units — so measure with wm_maxsize() (physical px).
+        CTk multiplies width/height (and a minsize) by the DPI factor but not x/y, and on
+        Windows winfo_screenwidth() reports unscaled units — so measure the work area (physical
+        px), else wm_maxsize() (physical px too).
         """
-        scaling = ctk.ScalingTracker.get_window_scaling(self)
-        screen_w, screen_h = self.wm_maxsize()
-        width = min(width, int(screen_w / scaling) - 40)
-        height = min(height, int(screen_h / scaling) - 40)
-        x = (screen_w - round(width * scaling)) // 2
-        y = (screen_h - round(height * scaling)) // 2
-        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+        scaling = float(ctk.ScalingTracker.get_window_scaling(self))
+        area = self._screen_area()
+        width, height, x, y = window_place(area, scaling, width, height)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.minsize(*window_minimum(area, scaling))
+
+    def _screen_area(self) -> ScreenArea:
+        """The work area of the primary screen (whose top-left is 0, 0), where the window
+        opens; off Windows its size from wm_maxsize()."""
+        area = work_area(0, 0)
+        if area is None:
+            screen_w, screen_h = self.wm_maxsize()
+            area = (0, 0, int(screen_w), int(screen_h))
+        return area
 
     def _build_header(self) -> None:
         """The spotlight band across the top, edge to edge (app/ui/spotlight_band.py)."""
@@ -1166,6 +1209,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # The Downloads page's progress and the header badge (they listen to it themselves).
         spawn(self._services.download_status.run_periodic(), name="download-status")
         spawn(self._services.images.prune(), name="poster-prune")
+        # The video tools (ffmpeg, yt-dlp) when this copy lacks them (an update from before):
+        # fetched once in the background, tried again later on a failure; nothing when there.
+        spawn(self._services.media_tools.run(), name="media-tools")
         self._band.start()  # its titles, its pictures and their turning
         spawn(self._note_version(), name="version-notice")
         spawn(self._services.updates.register_install(), name="installed-apps-entry")

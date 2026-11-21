@@ -55,6 +55,8 @@ class ParseOptionsTests(unittest.TestCase):
             ("--play", FILE): Options(play=FILE),
             ("--play",): Options(),  # nothing to play
             ("--play", FILE, "--tray"): Options(tray=True, play=FILE),
+            # install.ps1, once the packages are in (app/services/media_tools.py).
+            ("--fetch-tools",): Options(fetch_tools=True),
         }
         for argv, expected in cases.items():
             with self.subTest(argv=argv):
@@ -322,6 +324,37 @@ class MainTests(unittest.TestCase):
         action.side_effect = OSError("broken")
         with mock.patch("app.forge.context_menu.menu_action", action), self.assertLogs("airgrabber", "ERROR"):
             self.assertEqual(self.main("--forge-menu", "on"), 1)
+
+
+    # `--fetch-tools` (install.ps1): the video tools only, after the package check; no lock,
+    # no hand-over, no window; never a live download (fetch_once is faked).
+    def test_fetching_the_tools_needs_no_lock_and_hands_nothing_over(self) -> None:
+        with (
+            mock.patch.object(main, "hand_over", side_effect=AssertionError("no hand-over")),
+            mock.patch.object(main, "InstanceLock", side_effect=AssertionError("no lock")),
+            mock.patch.object(main, "_fetch_tools", return_value=0) as fetch,
+        ):
+            self.assertEqual(self.main("--fetch-tools", "--forge", FILE), 0)
+        fetch.assert_called_once()
+        self.run_app.assert_not_called()
+        self.assertEqual(take_requests(self.data_dir), [])
+
+    def test_fetching_the_tools_runs_after_the_package_check(self) -> None:
+        fetch = mock.AsyncMock(return_value=0)
+        with mock.patch("app.services.media_tools.fetch_once", fetch):
+            self.assertEqual(self.main("--fetch-tools"), 1)  # the (faked) check fails
+            fetch.assert_not_called()
+            self.requirements.return_value = True
+            self.assertEqual(self.main("--fetch-tools"), 0)
+            fetch.return_value = 1
+            self.assertEqual(self.main("--fetch-tools"), 1)
+        fetch.side_effect = OSError(r"C:\Users\Alex\secret")
+        with (
+            mock.patch("app.services.media_tools.fetch_once", fetch),
+            self.assertLogs("airgrabber", "ERROR") as logs,
+        ):
+            self.assertEqual(self.main("--fetch-tools"), 1)
+        self.assertNotIn("Alex", "\n".join(logs.output))  # the type only
 
 
 class ExitIfStuckTests(unittest.TestCase):

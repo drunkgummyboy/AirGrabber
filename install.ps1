@@ -864,6 +864,25 @@ function Enable-ForgeMenu([string]$Python) {
     }
 }
 
+function Install-VideoTools([string]$Python) {
+    # The video tools (ffmpeg, ffprobe and yt-dlp, about 110 MB from their GitHub pages, each
+    # checked against its published checksum) for MediaForge's trailers and the phone's copies,
+    # fetched by AirGrabber itself (main.py --fetch-tools, app/services/media_tools.py: exit code
+    # 0 = there). Never fails the install: AirGrabber tries again by itself after it starts.
+    $ErrorActionPreference = 'Continue'  # see Test-Python
+    Write-Step 'Getting the video tools (ffmpeg, about 110 MB, so this can take a few minutes)'
+    $code = 1
+    try {
+        & $Python (Join-Path $InstallDir 'main.py') --fetch-tools 2>$null | Out-Host
+        $code = $LASTEXITCODE
+    } catch {
+        $code = 1
+    }
+    if ($code -ne 0) {
+        Write-Host "    The video tools could not be downloaded now. AirGrabber gets them by itself after it starts." -ForegroundColor Yellow
+    }
+}
+
 function Get-Requirements([string]$Path) {
     # requirements.txt's packages as pip takes them: those above a "# optional" comment line are
     # required, those below it optional (app/bootstrap.py reads the file the same way).
@@ -931,6 +950,7 @@ function Install-AirGrabber {
 
     Install-QBittorrentIfNeeded $python
     Install-ProwlarrIfWanted
+    Install-VideoTools $python
 
     $pythonw = Join-Path (Split-Path -Parent $python) 'pythonw.exe'
     if (-not (Test-Path -LiteralPath $pythonw)) { $pythonw = $python }

@@ -30,6 +30,7 @@ from typing import Any
 
 import customtkinter as ctk
 
+from app import windows_user
 from app.forge.ui import file_drops
 from app.services import open_with, playback
 from app.ui import borderless, media_player
@@ -85,6 +86,10 @@ async def _no_open_with(on: bool) -> None:
 
 
 open_with.apply = _no_open_with
+
+# What Windows says about the user (app/windows_user.py) never comes from this PC: the
+# Downloads folder is %USERPROFILE%\Downloads unless a test fakes it.
+windows_user._known_downloads = lambda: None
 
 
 REAL_ICONBITMAP = tk.Wm.wm_iconbitmap

@@ -100,6 +100,7 @@ from app.models.settings import (
     SubtitlesMode,
     ThemeMode,
     Weekday,
+    stored_settings,
 )
 
 __all__ = [
@@ -202,4 +203,5 @@ __all__ = [
     "CalendarLayout",
     "InfoLayout",
     "Weekday",
+    "stored_settings",
 ]

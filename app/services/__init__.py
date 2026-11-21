@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import functools
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 
@@ -29,6 +29,7 @@ from app.services.folder_library.playing import FolderPlaying
 from app.services.folder_library.service import FolderLibraryService
 from app.services.images import ImageCache
 from app.services.library import LibraryService
+from app.services.media_tools import MediaTools, tools_folder
 from app.services.phone.cast_stream import CastStreams
 from app.services.phone.collection import FilmSeries
 from app.services.phone.coming_up import ComingUp, GrabbedFilms
@@ -36,8 +37,9 @@ from app.services.phone.copies import FOLDER as COPIES_FOLDER
 from app.services.phone.copies import PhoneCopies
 from app.services.phone.downloads import PhoneDownloads
 from app.services.phone.find import PhoneFind
+from app.services.phone.firewall import check_network
 from app.services.phone.forge import PhoneForge
-from app.services.phone.library import PhoneLibrary, reachable_copy
+from app.services.phone.library import TIMED_OUT, PhoneLibrary, find_copy, reachable_copy
 from app.services.phone.person import PhonePerson
 from app.services.phone.title import PhoneTitle
 from app.services.phone.play_links import PlayLinks
@@ -48,7 +50,7 @@ from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
 from app.services.local_files import PLACES_FILE, LocalPlaces
 from app.services.problem_report import ProblemReports
-from app.services.playback import PlaybackService, forge_folders
+from app.services.playback import PlaybackService, forge_folders, settings_folders
 from app.services.plex import PlexClient, PlexService
 from app.services.plex_library import PlexLibraryService, library_posters
 from app.services.plex_scans import PlexScansAfterMoves
@@ -111,6 +113,7 @@ class Services:
         "given_up",
         "images",
         "library",
+        "media_tools",
         "phone",
         "phone_forge",
         "phone_sends",
@@ -236,15 +239,17 @@ class Services:
         self.plex_posters = ImageCache(
             http, paths.posters / "plex", fetch=library_posters(self.plex.poster, images.raw)
         )
-        # ▶ Play in the info windows: Plex's file found through MediaForge's Series / Movies
-        # folders (read from the Forge runtime when asked), or the folder library's own file,
-        # played in AirGrabber's player (VLC as the fallback).
+        # ▶ Play in the info windows: Plex's file found as Plex names it (Plex on this PC), in
+        # Settings → Folders' folders or through MediaForge's Series / Movies folders (read from
+        # the Forge runtime when asked), or the folder library's own file, played in
+        # AirGrabber's player (VLC as the fallback).
         self.playback = PlaybackService(
             self.plex,
             forge_folders(forge),
             folder_library=self.folder_playing,
             person=lambda: self.profiles.current_id,
             show_tmdb_id=discovery.show_tmdb_id,  # a show's folder marks when no title names it
+            own_folders=settings_folders(lambda: settings.current),
         )
         # Where videos opened from Explorer's "Open with" were left (app/services/local_files.py).
         self.local_places = LocalPlaces(paths.root / PLACES_FILE)
@@ -284,29 +289,37 @@ class Services:
             files=db.library_files,
             status=self.download_status,  # its `latest` only: a download's `progress`
         )
-        # Phone-sized copies of 4K films, made on this PC's graphics card with MediaForge's
-        # ffmpeg (app/services/phone/copies.py); the phone asks, or Send to phone does. A folder
-        # library film's (Downloaded's, beside Plex too) is made from its own file that is there
-        # now (no fetch).
+        # The video tools (ffmpeg, ffprobe, yt-dlp) come with AirGrabber: install.ps1 gets them,
+        # and a copy without them fetches them in the background after its start (`run` from
+        # the UI; app/services/media_tools.py). MediaForge's trailers fetch through it too.
+        self.media_tools = MediaTools(tools_folder(paths), http)
+        # Phone-sized copies of 4K films, made on this PC's graphics card (NVIDIA, Intel, AMD),
+        # else its processor, with the video tools' ffmpeg (app/services/phone/copies.py); the
+        # phone asks, or Send to phone does. A folder library film's (Downloaded's, beside Plex
+        # too) is made from its own file that is there now (no fetch).
         copies = PhoneCopies(
             self.plex,
             paths.root / COPIES_FOLDER,
-            paths.forge / "tools" / "ffmpeg" / "bin",
+            self.media_tools.ffmpeg_bin,
             local_source=functools.partial(_own_file, self.folder_playing),
+            missing_text=self.media_tools.missing_text,
         )
         # Send to phone (the Library page) and each phone's menu of what it holds.
         self.phone_sends = PhoneSends(settings, copies=copies)
+        # Tools that came after the start: the encoders tried, the waiting copies made.
+        self.media_tools.when_fetched(functools.partial(_tools_arrived, copies, self.phone_sends))
         # The folder library for a Companion that knows it, whenever the folders are on (without
         # Plex its library, beside Plex its Downloaded section): the films and shows, a title's
         # details and a show's episodes, with the phone's own person's places.
         # Cast sound streams for Cast TVs (app/services/phone/cast_stream.py): the picture copied,
-        # the sound made AAC by MediaForge's ffmpeg, from the file as ▶ Play finds it on this PC
-        # (a folder video's as the copies' own file); served by the play link server under /c/.
+        # the sound made AAC by the video tools' ffmpeg, from the file as ▶ Play finds it on this
+        # PC (a folder video's as the copies' own file); served by the play link server under /c/.
         cast = CastStreams(
             self.plex,
             self.playback,
-            paths.forge / "tools" / "ffmpeg" / "bin",
-            own_file=functools.partial(_own_file, self.folder_playing),
+            self.media_tools.ffmpeg_bin,
+            own_file=functools.partial(_own_cast_file, self.folder_playing),
+            missing_text=self.media_tools.missing_text,
         )
         # Play links (plain http) to a folder video for the phone's player and TVs: one set,
         # made by the library's route, served by the server the phone connection runs.
@@ -319,6 +332,7 @@ class Services:
             discovery,
             tmdb,
             play_links=play_links,
+            probe=cast.quick_probe,  # a play link's codecs, by the video tools' ffprobe
         )
         self.phone_forge = PhoneForge(forge, self.profiles)  # closed in aclose()
         phone_routes: dict[tuple[str, str], Route] = {
@@ -366,6 +380,8 @@ class Services:
             copies=copies,
             play_links=play_links,
             cast=cast,
+            # A Public network or a firewall rule blocking "Python": the page's hint.
+            network_check=check_network,
         )
 
     @classmethod
@@ -473,6 +489,13 @@ class Services:
                 await self._db.close()
 
 
+async def _tools_arrived(copies: PhoneCopies, sends: PhoneSends) -> None:
+    """The video tools came after the start: phone-sized copies tried again (only while the
+    phone connection runs), and the ones Send to phone still waits for made."""
+    if await copies.tools_arrived():
+        sends.resume_copies()
+
+
 FILM_LOOKUP_S = 15.0  # a kept film's TMDB description, at its turn after a restart
 
 
@@ -501,6 +524,17 @@ async def _own_file(playing: FolderPlaying, key: str) -> Path | None:
         return None
     found = await reachable_copy(await playing.copies_of(key))
     return found[0] if found is not None else None
+
+
+async def _own_cast_file(playing: FolderPlaying, key: str) -> Path | Literal["timed_out"] | None:
+    """As `_own_file`, but TIMED_OUT when a copy's share didn't answer in time (the cast stream
+    then answers 504 `folder_timeout`, not 404)."""
+    if not playing.on:
+        return None
+    found = await find_copy(await playing.copies_of(key))
+    if isinstance(found, tuple):
+        return found[0]
+    return "timed_out" if found == TIMED_OUT else None
 
 
 async def _known_titles(db: Database) -> tuple[list[Show], list[Movie]]:

@@ -6,6 +6,7 @@ import math
 from enum import StrEnum
 from pathlib import Path
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -24,6 +25,7 @@ from pydantic import (
 
 from app.i18n import N_, Language, t
 from app.models.types import UtcDatetime
+from app.windows_user import downloads_folder
 
 
 class QualityProfile(StrEnum):
@@ -453,7 +455,9 @@ class Settings(BaseModel):
     size_movie_max_gb: SizeLimit = None
     # FOLDER keeps the 1.x/2.0 behaviour for existing users; new users choose on first run.
     download_mode: DownloadMode = DownloadMode.FOLDER
-    download_dir: Path = Field(default_factory=lambda: Path.home() / "Downloads")
+    # New settings: the user's Downloads folder where Windows has it (not always in their
+    # profile); a stored folder stays as it is.
+    download_dir: Path = Field(default_factory=downloads_folder)
     # Films' own watch folder in FOLDER mode; None ("" as typed) = `download_dir`, as before.
     movie_download_dir: Path | None = None
     # Newly followed shows get their "download new episodes automatically" switch turned on.
@@ -519,8 +523,9 @@ class Settings(BaseModel):
     # set by the automatic setup only, never shown in the UI.
     prowlarr_seeded_url: str = ""
     # The torrent program on a NAS or another computer: DownloadMode.REMOTE sends everything
-    # there, FOLDER only the releases that have no .torrent file.
-    remote_kind: RemoteKind = RemoteKind.SYNOLOGY
+    # there, FOLDER only the releases that have no .torrent file. qBittorrent for new settings;
+    # stored settings without the key had Synology's (`stored_settings`).
+    remote_kind: RemoteKind = RemoteKind.QBITTORRENT
     remote_url: ServiceUrl = ""  # e.g. http://192.168.1.10:8080
     remote_username: str = ""
     remote_password: StoredSecret = SecretStr("")
@@ -585,6 +590,10 @@ class Settings(BaseModel):
     # the X-Plex-Token header only, never in a URL, message or log; "" = not connected.
     plex_client_id: str = ""  # X-Plex-Client-Identifier: a random UUID made once
     plex_token: StoredSecret = SecretStr("")
+    # A Plex Home or shared server's own token (plex.tv's `accessToken`), filled when such a
+    # server is chosen or found; "" for the account's own server (that takes `plex_token`). The
+    # same secret as the token: header only (app/services/plex.py's `server_token`).
+    plex_server_token: StoredSecret = SecretStr("")
     plex_server_id: str = ""  # the chosen server's machine identifier
     plex_server_name: str = ""
     plex_server_uri: str = ""  # the server's connection that answered last
@@ -610,6 +619,7 @@ class Settings(BaseModel):
     phone_devices: tuple[PairedPhone, ...] = ()
     phone_pc_id: str = ""  # how a phone recognises this PC: a random id made once
     phone_fingerprint: str = ""  # the certificate the paired phones trust
+    phone_port: int = 0  # the port the phone server got last time, tried first (0: none yet)
     phone_shortlist: tuple[ShortItem, ...] = ()  # tonight's, shared by the phones
     phone_shortlist_version: int = 0  # moves with every change to it
     phone_orders: tuple[PhoneOrder, ...] = ()  # sent to a phone from the PC, not done yet
@@ -630,7 +640,9 @@ class Settings(BaseModel):
     def _from_download_station(cls, data: Any) -> Any:
         """Settings stored before other torrent programs existed keep their Synology Download
         Station: `ds_*` become `remote_*` (kind Synology). The next save drops the `ds_*` keys."""
-        if not isinstance(data, dict) or any(str(key).startswith("remote_") for key in data):
+        if not isinstance(data, dict) or any(
+            str(key).startswith("remote_") and key != "remote_kind" for key in data
+        ):
             return data
         moved = {new: data[old] for old, new in _DOWNLOAD_STATION_KEYS if old in data}
         if not moved:
@@ -691,6 +703,17 @@ class Settings(BaseModel):
         # Not the slashes of a destination: qBittorrent and Transmission want absolute paths
         # ("/downloads/tv"); the Download Station client strips them itself.
         return value.strip() if isinstance(value, str) else value
+
+
+def stored_settings(stored: Mapping[str, Any]) -> dict[str, Any]:
+    """Stored settings (the database's, a backup's) as Settings should read them: a key they
+    lack means what its default was when they were stored. `remote_kind` was Synology's
+    Download Station before new settings started at qBittorrent. Empty (a new install's):
+    today's defaults."""
+    data = dict(stored)
+    if data and "remote_kind" not in data:
+        data["remote_kind"] = RemoteKind.SYNOLOGY.value
+    return data
 
 
 # Synology Download Station settings of AirGrabber 2.0 before other programs: (old, new) key.

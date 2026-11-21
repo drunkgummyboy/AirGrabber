@@ -16,6 +16,8 @@ from app.models.plex import PlexFilmFile
 from app.services.phone.copies import (
     CONVERT_FAILED_TEXT,
     DOLBY_VISION_TEXT,
+    ENCODERS,
+    NOT_POSSIBLE_TEXT,
     FETCH_SHARE,
     NO_ROOM_TEXT,
     NOT_THERE_TEXT_FOLDERS,
@@ -29,6 +31,7 @@ from app.services.phone.copies import (
     progress_seconds,
     read_probe,
 )
+from app.services.media_tools import TOOLS_COMING_TEXT
 from app.services.phone.server import FileReply, Reply, Request
 from app.services.plex import PlexUnreachable
 
@@ -110,11 +113,50 @@ class RecipeTests(unittest.TestCase):
         self.assertIn("-profile:v main ", joined)
         self.assertNotIn("-color_primaries", joined)  # none known: none written
 
+    def test_the_command_per_encoder(self) -> None:
+        info = read_probe(probe_json())
+        assert info is not None
+        cases = {
+            "qsv": ("-c:v hevc_qsv -preset slow -b:v 6M -maxrate 10M -bufsize 20M -profile:v main10", "p010le"),
+            "amf": ("-c:v hevc_amf -usage transcoding -quality quality -rc vbr_peak -b:v 6M -maxrate 10M -bufsize 20M -profile:v main10", "p010le"),
+            "x265": ("-c:v libx265 -preset fast -b:v 6M -maxrate 10M -bufsize 20M -profile:v main10 -x265-params log-level=error", "yuv420p10le"),
+        }  # fmt: skip
+        for encoder, (settings, pixels) in cases.items():
+            with self.subTest(encoder=encoder):
+                args = ffmpeg_args(FFMPEG, Path("in"), Path("out"), info, encoder=encoder)  # type: ignore[arg-type]
+                joined = " ".join(args)
+                self.assertNotIn("-hwaccel", joined)  # the processor decodes and scales
+                self.assertIn(f"scale=w=1920:h=1080:flags=lanczos,format={pixels}", joined)
+                self.assertIn(settings, joined)
+                self.assertIn("-color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc", joined)
+                self.assertIn("-c:a copy -c:a:0 eac3 -b:a:0 640k -ac:a:0 6", joined)  # sound as before
+                self.assertIn("-c:s copy -c:s:1 srt", joined)
+                self.assertEqual(args[-3:], ["-f", "matroska", "out"])
+        eight = SourceInfo(width=3840, height=2160, ten_bit=False, duration_s=60)
+        for encoder, pixels in (("qsv", "nv12"), ("amf", "nv12"), ("x265", "yuv420p")):
+            joined = " ".join(ffmpeg_args(FFMPEG, Path("in"), Path("out"), eight, encoder=encoder))  # type: ignore[arg-type]
+            self.assertIn(f"format={pixels} ", joined)
+            self.assertIn("-profile:v main ", joined)
+
+    def test_a_ten_bit_film_on_an_eight_bit_encoder(self) -> None:
+        info = read_probe(probe_json())
+        assert info is not None
+        joined = " ".join(ffmpeg_args(FFMPEG, Path("in"), Path("out"), info, ten_bit=False))
+        self.assertNotIn("-hwaccel", joined)  # the card's scaler would keep 10 bits
+        self.assertIn("format=yuv420p ", joined)
+        self.assertIn("-profile:v main ", joined)
+        self.assertIn("-color_trc smpte2084", joined)  # its colour tags kept
+
     def test_progress(self) -> None:
         self.assertEqual(progress_seconds("out_time_us=1500000\n"), 1.5)
         self.assertEqual(progress_seconds("out_time_ms=3000000"), 3.0)  # microseconds too
         self.assertIsNone(progress_seconds("out_time_us=N/A"))
         self.assertIsNone(progress_seconds("frame=12"))
+
+
+def codec_of(args: Sequence[str]) -> tuple[str, bool]:
+    """(the picture's encoder, 10-bit) of an ffmpeg command."""
+    return args[list(args).index("-c:v") + 1], "main10" in args
 
 
 class FakePlex:
@@ -151,6 +193,9 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.probe = probe_json()
         self.card_encodes = True
         self.card_decodes = True
+        # (codec, 10-bit) the fake ffmpeg encodes; None: every one (as `card_encodes` says)
+        self.working: set[tuple[str, bool]] | None = None
+        self.tried: list[tuple[str, bool]] = []
         self.conversions: list[list[str]] = []
         self.now = 1_000_000.0
         self.free = 10**12
@@ -172,6 +217,10 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
     async def fake_run(self, args: Sequence[str], _timeout: float) -> tuple[int, bytes]:
         if Path(args[0]).name == "ffprobe.exe":
             return 0, json.dumps(self.probe).encode()
+        tried = codec_of(args)
+        self.tried.append(tried)
+        if self.working is not None:
+            return (0 if tried in self.working else 1), b""
         return (0 if self.card_encodes else 1), b""  # the card's try
 
     async def fake_convert(
@@ -180,6 +229,8 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         self.conversions.append(list(args))
         if "-hwaccel" in args and not self.card_decodes:
             return 1
+        if self.working is not None and codec_of(args) not in self.working:
+            return 1  # the probe's tiny picture went, the film doesn't
         progress(0.5)
         Path(args[-1]).write_bytes(b"small copy")
         progress(1.0)
@@ -277,6 +328,118 @@ class JobTests(unittest.IsolatedAsyncioTestCase):
         copies = self.copies()
         await copies.start()
         self.assertFalse(copies.available)
+
+    async def test_the_encoders_are_tried_in_order(self) -> None:
+        self.assertEqual(ENCODERS, ("nvenc", "qsv", "amf", "x265"))
+        nv, qsv, amf, x265 = "hevc_nvenc", "hevc_qsv", "hevc_amf", "libx265"
+        cases: list[tuple[str, set[tuple[str, bool]], list[tuple[str, bool]], str | None]] = [
+            ("nvidia", {(nv, False), (nv, True)}, [(nv, False), (nv, True)], "nvenc"),
+            ("intel", {(qsv, False), (qsv, True)}, [(nv, False), (qsv, False), (qsv, True)], "qsv"),
+            ("amd", {(amf, False), (amf, True), (x265, False), (x265, True)},
+             [(nv, False), (qsv, False), (amf, False), (amf, True)], "amf"),
+            ("processor", {(x265, False), (x265, True)},
+             [(nv, False), (qsv, False), (amf, False), (x265, False), (x265, True)], "x265"),
+            ("nothing", set(), [(nv, False), (qsv, False), (amf, False), (x265, False)], None),
+        ]  # fmt: skip
+        for name, working, tried, chosen in cases:
+            with self.subTest(name):
+                await self.asyncSetUp()
+                self.working = working
+                copies = self.copies()
+                await copies.start()
+                self.assertEqual(self.tried, tried)  # each once, the first that works kept
+                self.assertEqual(copies.encoder, chosen)
+                self.assertEqual(copies.available, chosen is not None)
+                reply = await self.ask(copies, "POST", "/v1/phone-copies", key="501", kind="movie")
+                if chosen is None:
+                    self.assertEqual((reply.status, reply.body["message"]), (409, NOT_POSSIBLE_TEXT))
+                    continue
+                self.assertEqual((await self.made(copies))["state"], "ready")
+                self.assertEqual(codec_of(self.conversions[0]), (tried[-1][0], True))
+
+    async def test_the_probe_is_a_tiny_real_picture(self) -> None:
+        self.working = {("libx265", False), ("libx265", True)}
+        seen: list[list[str]] = []
+        real = self.fake_run
+
+        async def run(args: Sequence[str], timeout: float) -> tuple[int, bytes]:
+            seen.append(list(args))
+            return await real(args, timeout)
+
+        copies = self.copies()
+        copies._run = run
+        await copies.start()
+        last = " ".join(seen[-1])
+        self.assertIn("-f lavfi -i color=c=black:s=256x144:d=0.2 -vf format=yuv420p10le -c:v libx265", last)
+        self.assertTrue(last.endswith("-f null -"))
+        self.assertIn("-vf format=nv12 -c:v hevc_qsv", " ".join(seen[1]))
+
+    async def test_a_ten_bit_film_goes_to_an_encoder_that_does_ten_bits(self) -> None:
+        # The AMD card does 8 bits only: the 10-bit film goes to the processor, an 8-bit one stays.
+        self.working = {("hevc_amf", False), ("libx265", True), ("libx265", False)}
+        copies = self.copies()
+        await copies.start()
+        self.assertEqual(self.tried[-2:], [("hevc_amf", True), ("libx265", True)])
+        self.assertEqual(copies.encoder, "amf")
+        await self.ask(copies, "POST", "/v1/phone-copies", key="501", kind="movie")
+        self.assertEqual((await self.made(copies))["state"], "ready")
+        joined = " ".join(self.conversions[0])
+        self.assertIn("-c:v libx265", joined)
+        self.assertIn("format=yuv420p10le", joined)
+        self.probe = probe_json(pix_fmt="yuv420p")
+        await self.ask(copies, "POST", "/v1/phone-copies", key="502", kind="movie")
+        self.assertEqual((await self.made(copies, "502"))["state"], "ready")
+        self.assertIn("-c:v hevc_amf", " ".join(self.conversions[1]))
+
+    async def test_a_card_that_fails_the_film_falls_back_to_the_processor(self) -> None:
+        # Quick Sync made the tiny picture, not the film: the processor makes it.
+        self.working = {("hevc_qsv", False), ("hevc_qsv", True), ("libx265", True)}
+        copies = self.copies()
+        await copies.start()
+        self.assertEqual(copies.encoder, "qsv")
+        self.working.discard(("hevc_qsv", True))
+        await self.ask(copies, "POST", "/v1/phone-copies", key="501", kind="movie")
+        self.assertEqual((await self.made(copies))["state"], "ready")
+        self.assertEqual([codec_of(args) for args in self.conversions], [("hevc_qsv", True), ("libx265", True)])
+
+    async def test_nvidia_falls_back_to_the_processor_last(self) -> None:
+        copies = self.copies()
+
+        async def only_the_processor(args: Sequence[str], duration: float, progress: Callable[[float], None]) -> int:
+            self.conversions.append(list(args))
+            if "libx265" not in args:
+                return 1
+            Path(args[-1]).write_bytes(b"small copy")
+            return 0
+
+        copies._convert = only_the_processor
+        await copies.start()
+        await self.ask(copies, "POST", "/v1/phone-copies", key="501", kind="movie")
+        self.assertEqual((await self.made(copies))["state"], "ready")
+        self.assertEqual(len(self.conversions), 3)  # the card decoding, the processor decoding, x265
+        self.assertIn("-hwaccel", self.conversions[0])
+        self.assertNotIn("-hwaccel", self.conversions[1])
+        self.assertIn("hevc_nvenc", self.conversions[1])
+        self.assertIn("libx265", self.conversions[2])
+
+    async def test_without_the_tools_they_are_on_their_way_and_tried_when_they_come(self) -> None:
+        (self.tools / "ffmpeg.exe").unlink()
+        copies = self.copies(missing_text=lambda: "on their way")
+        await copies.start()
+        self.assertFalse(copies.available)
+        self.assertEqual(self.tried, [])
+        reply = await self.ask(copies, "POST", "/v1/phone-copies", key="501", kind="movie")
+        self.assertEqual((reply.status, reply.body["message"]), (409, "on their way"))
+        plain = self.copies()
+        await plain.start()
+        reply = await self.ask(plain, "POST", "/v1/phone-copies", key="501", kind="movie")
+        self.assertEqual(reply.body["message"], TOOLS_COMING_TEXT)
+        self.assertFalse(await self.copies().tools_arrived())  # not started: nothing tried
+        (self.tools / "ffmpeg.exe").write_bytes(b"")
+        self.assertTrue(await copies.tools_arrived())
+        self.assertTrue(copies.available)
+        self.assertEqual(copies.encoder, "nvenc")
+        self.assertFalse(await copies.tools_arrived())  # once
 
     async def test_bad_requests(self) -> None:
         copies = self.copies()

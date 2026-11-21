@@ -293,6 +293,8 @@ class HomeOnlyTests(ServerCase):
             "fe80::1",
             "fe80::1%12",
             "::ffff:192.168.1.20",
+            "100.64.0.1",  # carrier-grade NAT: Tailscale (2026-11-21)
+            "fd00::1",  # IPv6 unique local
         ):
             with self.subTest(ip):
                 self.assertTrue(is_home_address(ip))
@@ -301,7 +303,7 @@ class HomeOnlyTests(ServerCase):
         for ip in (
             "8.8.8.8",
             "172.32.0.1",
-            "100.64.0.1",
+            "100.128.0.1",
             "192.0.2.1",
             "0.0.0.0",
             "::",

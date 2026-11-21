@@ -1123,7 +1123,10 @@ class QueueTest(QueueCase):
             return None
 
         self.view.ask = never
-        async with self.services.trailers._install_lock:
+        from app.services.media_tools import _lock_for
+
+        # AirGrabber's own fetch (app/services/media_tools.py) holds the tools folder's lock.
+        async with _lock_for(self.services.trailers._fetcher.tools_dir):
             await self.view.forge()
         self.assertEqual(asked, [])
         self.assertEqual(self.names(self.tmp / "lib" / "Dune (2021)"), ["Dune (2021).mkv"])

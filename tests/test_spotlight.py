@@ -1,6 +1,6 @@
 """The header's spotlight band: which titles it picks (app/services/spotlight.py), its texts in
-English and Dutch, when it turns (`Rotation`), where everything goes at 1220 units and wider,
-the glow without a TMDB key, the baked pictures (the scrim, the shadows), "Grabber"'s colour in
+English and Dutch, when it turns (`Rotation`), where everything goes at 1220 units and wider
+(and the tightened row of a narrower window, on the smallest screens' windows), the glow without a TMDB key, the baked pictures (the scrim, the shadows), "Grabber"'s colour in
 every palette, the band on a hidden Tk root and its compact state on MediaForge's page (🕘, only
 there), the Series / Movies / MediaForge switch on the tabs row under the band (`ModeSwitch`,
 right-aligned, level with the tabs, in every mode, with MediaForge's badge), and the main pages'
@@ -65,6 +65,8 @@ from app.ui.spotlight import (
     BUTTON_GAP,
     COMPACT_HEIGHT,
     PAD_X,
+    PERSON_NAME_MAX,
+    PERSON_TIGHT_WIDTH,
     PILL_PAD,
     POSTER_HEIGHT,
     POSTER_TOP,
@@ -82,11 +84,13 @@ from app.ui.spotlight import (
     controls,
     film_line,
     hit_target,
+    person_width,
     sub_line,
     switch_layout,
     tag_text,
     title_text,
 )
+from app.ui.main_window import window_minimum
 from app.ui.spotlight_band import SpotlightBand
 from app.ui.widgets import UNDERLINE_LEFT, UNDERLINE_TAB_GAP, Tabview
 
@@ -608,9 +612,13 @@ class LayoutTests(unittest.TestCase):
                 self.check(width)
                 layout = band_layout(width, word_width=WORD)
                 self.assertGreaterEqual(layout.search.w, SEARCH_MIN_WIDTH)
-        # Far narrower than the window gets: the search field gives way first.
+        # Far narrower than the window gets: the search field gives way first, then the word.
         self.check(550)
-        self.assertEqual(band_layout(500, word_width=WORD, history=True).search.w, SEARCH_MIN_WIDTH)
+        self.assertTrue(band_layout(550, word_width=WORD, history=True).word)
+        narrow = band_layout(500, word_width=WORD, history=True)
+        self.assertFalse(narrow.word)
+        self.assertGreaterEqual(narrow.search.w, SEARCH_MIN_WIDTH)
+        self.assertEqual(band_layout(350, word_width=WORD, history=True).search.w, SEARCH_MIN_WIDTH)
 
     def test_what_the_pointer_is_over(self) -> None:
         layout = band_layout(1220, word_width=WORD, dots=3, current=1)
@@ -663,6 +671,66 @@ class LayoutTests(unittest.TestCase):
                     for index, part in enumerate(layout.parts):
                         hit = hit_target(layout, *middle(part), items=3)
                         self.assertEqual(hit, Hit(HitKind.PART, index))
+
+    # The fullest row: four parts (Library with Plex) in Dutch's widths, 🕘, 📱 and a long name.
+    FULL: dict[str, Any] = {
+        "word_width": 96.0,
+        "person_width": person_width(PERSON_NAME_MAX, 7),
+        "history": True,
+        "phone": True,
+        "part_widths": (134.0, 134.0, 134.0, 137.0),
+        "tight_part_widths": (76.0, 70.0, 114.0, 137.0),
+    }
+
+    def test_a_narrow_window_tightens_the_row(self) -> None:
+        """Too narrow for the whole row: first the parts close around their words, then the
+        logo without "AirGrabber", then only the avatar; what still fits stays as it was."""
+        wide = band_layout(1650, **self.FULL)
+        self.assertEqual([part.w for part in wide.parts], [134.0, 134.0, 134.0, 137.0])
+        self.assertTrue(wide.word and wide.person_name)
+        tight_parts = band_layout(1200, **self.FULL)
+        self.assertEqual([part.w for part in tight_parts.parts], [76.0, 70.0, 114.0, 137.0])
+        self.assertTrue(tight_parts.word and tight_parts.person_name)
+        no_word = band_layout(1100, **self.FULL)
+        self.assertFalse(no_word.word)
+        self.assertTrue(no_word.person_name)
+        self.assertEqual(no_word.brand, no_word.logo)  # the logo still goes home
+        only_avatar = band_layout(960, **self.FULL)
+        self.assertFalse(only_avatar.word or only_avatar.person_name)
+        self.assertEqual(only_avatar.person.w, PERSON_TIGHT_WIDTH)
+        self.assertEqual(only_avatar.avatar.x - only_avatar.person.x, only_avatar.person.right - only_avatar.avatar.right)
+
+    def test_every_control_reachable_down_to_the_smallest_screens(self) -> None:
+        for width in (1220, 1128, 1097, 1076, 1000, 940):
+            with self.subTest(width):
+                layout = band_layout(width, **self.FULL)
+                reachable(self, layout)
+
+
+def reachable(case: unittest.TestCase, layout: Any) -> None:
+    """Every control of the top row on the band, none over another, its middle its own."""
+    width = layout.width
+    parts = controls(layout)
+    for index, part in enumerate(parts):
+        case.assertGreaterEqual(part.x, PAD_X - 0.01, (width, part))
+        case.assertLessEqual(part.right, width - PAD_X + 0.01, (width, part))
+        for other in parts[index + 1 :]:
+            case.assertFalse(part.overlaps(other), (width, part, other))
+    case.assertGreaterEqual(layout.search.w, SEARCH_MIN_WIDTH)
+    expected = [
+        (layout.magnifier, Hit(HitKind.SEARCH)),
+        (layout.downloads, Hit(HitKind.DOWNLOADS)),
+        (layout.settings, Hit(HitKind.SETTINGS)),
+        *((part, Hit(HitKind.PART, index)) for index, part in enumerate(layout.parts)),
+    ]
+    if layout.history.w > 0:
+        expected.append((layout.history, Hit(HitKind.HISTORY)))
+    if layout.phone.w > 0:
+        expected.append((layout.phone, Hit(HitKind.PHONE)))
+    if layout.person.w > 0:
+        expected.append((layout.person, Hit(HitKind.PERSON)))
+    for rect, hit in expected:
+        case.assertEqual(hit_target(layout, *middle(rect), items=3), hit, (width, rect))
 
 
 
@@ -883,7 +951,7 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         band.set_phone(False)
         self.assertEqual(option(band, band._phone_glyph, "state"), "hidden")
 
-    def band(self, *, motion: bool = True) -> SpotlightBand:
+    def band(self, *, motion: bool = True, width: float = 1220) -> SpotlightBand:
         band = SpotlightBand(
             self.root,
             spotlight=self.service,  # type: ignore[arg-type]
@@ -905,9 +973,9 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         )
         band.pack(fill="x")
         scale = float(ctk.ScalingTracker.get_widget_scaling(band))
-        width = round(1220 * scale)
-        self.root.geometry(f"{width}x{round(300 * scale)}")  # CTk scales this; the band follows
-        band._on_configure(SimpleNamespace(width=width))
+        physical = round(width * scale)
+        self.root.geometry(f"{physical}x{round(300 * scale)}")  # CTk scales this; the band follows
+        band._on_configure(SimpleNamespace(width=physical))
         return band
 
     async def settle(self, rounds: int = 40) -> None:
@@ -1291,6 +1359,49 @@ class BandTests(unittest.IsolatedAsyncioTestCase):
         for index, part in enumerate(parts):
             for other in parts[index + 1 :]:
                 self.assertFalse(part.overlaps(other), (part, other))
+
+
+    async def test_the_smallest_screens_keep_every_control(self) -> None:
+        """The window at its smallest on 1366×768 at 125 %, 1920×1080 at 175 % and 2256×1504 at
+        200 % (`window_minimum`): the fullest row in Dutch (Library, 🕘, 📱, a long name) still
+        has every control on the band, the name in the avatar's tip once it is all that shows."""
+        i18n.set_language(Language.NL)
+        for area, scaling in SMALL_SCREENS:
+            width, _height = window_minimum(area, scaling)
+            with self.subTest(width=width):
+                band = self.band(width=width)
+                band.set_library_shown(True)
+                band.set_compact(True)  # MediaForge's page: 🕘 too
+                band.set_phone(True)
+                band.set_person("Alexandra-Charlotte", "A", theme.PERSON_BLUE)
+                layout = band.layout
+                assert layout is not None
+                self.assertAlmostEqual(layout.width, width, delta=1)
+                reachable(self, layout)
+                hidden = option(band, band._person_name, "state") == "hidden"
+                self.assertEqual(hidden, not layout.person_name)
+                self.assertEqual(option(band, band._word_items[0], "state") == "hidden", not layout.word)
+                band.destroy()
+        band = self.band(width=940)
+        band.set_library_shown(True)
+        band.set_compact(True)
+        band.set_phone(True)
+        band.set_person("Alexandra-Charlotte", "A", theme.PERSON_BLUE)
+        layout = band.layout
+        assert layout is not None and not layout.person_name and not layout.word
+        reachable(self, layout)
+        self.assertEqual(option(band, band._person_name, "state"), "hidden")
+        self.assertEqual(option(band, band._avatar_item, "state"), "normal")
+        self.assertTrue(band._name_in_tip(Hit(HitKind.PERSON)))
+        self.assertEqual(option(band, band._word_items[1], "state"), "hidden")
+
+
+# Work areas (physical, the taskbar 48 units tall) and Windows' scaling of small screens.
+SMALL_SCREENS = (
+    ((0, 0, 1366, 768 - 60), 1.25),
+    ((0, 0, 1920, 1080 - 84), 1.75),
+    ((0, 0, 2256, 1504 - 96), 2.0),
+)
 
 
 def item_option(canvas: tk.Canvas, item: int, name: str) -> str:

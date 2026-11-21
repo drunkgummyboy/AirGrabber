@@ -48,6 +48,8 @@ from app.services.plex import (
     external_ids,
     match_scan,
     parse_guid,
+    plain_connections,
+    server_token,
 )
 from app.services.tvmaze import TVMazeClient
 from app.ui.calendar_stack import needed_entries, row_state, row_text
@@ -68,6 +70,8 @@ LOCAL_HTTPS = "https://192-168-1-20.a1b2c3d4e5f6.plex.direct:32400"
 LOCAL_HTTP = "http://192.168.1.20:32400"
 REMOTE = "https://203-0-113-7.a1b2c3d4e5f6.plex.direct:32400"
 RELAY = "https://198-51-100-9.a1b2c3d4e5f6.plex.direct:8443"
+SHARED_ID = "f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0"
+SERVER_TOKEN = "fake-server-token-1"  # Alex-NAS's own accessToken in resources.json
 NOW = datetime(2026, 11, 3, 10, 0, tzinfo=UTC)
 DAY = timedelta(days=1)
 
@@ -90,6 +94,7 @@ class FakePlex:
         self.answering: set[str] = {LOCAL_HTTPS, LOCAL_HTTP, REMOTE}  # the server's addresses
         self.plex_tv_down = False
         self.refuse = False  # 401 for the token
+        self.server_token = TOKEN  # what the server takes (a shared server: its own)
         self.resources = "resources.json"
         self.resources_data: list[dict[str, Any]] | None = None  # instead of the file
         self.polls_before_linked = 2
@@ -110,7 +115,8 @@ class FakePlex:
         return self._server(request)
 
     def _authorised(self, request: httpx.Request) -> bool:
-        return not self.refuse and request.headers.get("X-Plex-Token") == TOKEN
+        wanted = TOKEN if request.url.host == "plex.tv" else self.server_token
+        return not self.refuse and request.headers.get("X-Plex-Token") == wanted
 
     def _plex_tv(self, request: httpx.Request) -> httpx.Response:
         if self.plex_tv_down:
@@ -292,21 +298,69 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(scan.unmatched_films, 1)  # a home video without any outside id
 
 
+def resource(owned: bool = True, **changes: Any) -> dict[str, Any]:
+    """resources.json's Alex-NAS, with `changes`."""
+    [nas] = [r for r in fixture("resources.json") if r["clientIdentifier"] == SERVER_ID]
+    return {**nas, "owned": owned, **changes}
+
+
+def https_only(connections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The connections without the local plain http one plex.tv lists."""
+    return [c for c in connections if c["uri"] != LOCAL_HTTP]
+
+
 class ConnectionOrderTests(unittest.IsolatedAsyncioTestCase):
-    async def test_owned_servers_only_and_local_https_first(self) -> None:
+    async def test_servers_owned_first_and_local_https_first(self) -> None:
         fake = FakePlex()
         async with httpx.AsyncClient(transport=httpx.MockTransport(fake)) as http:
             client = PlexClient(http, client_id=lambda: CLIENT_ID)
             servers = await client.servers(TOKEN)
-        [server] = servers  # not the player, not the friend's shared server
-        self.assertEqual((server.machine_id, server.name), (SERVER_ID, "Alex-NAS"))
+            listed = await client.resources(TOKEN)
+        server, shared = servers  # not the player; the friend's shared server after the own
+        self.assertEqual((server.machine_id, server.name, server.owned), (SERVER_ID, "Alex-NAS", True))
+        self.assertEqual((shared.machine_id, shared.owned), (SHARED_ID, False))
         self.assertEqual(
             [c.uri for c in connection_order(server)], [LOCAL_HTTPS, LOCAL_HTTP, REMOTE]
-        )
+        )  # the local http one plex.tv lists is the plain try already: not twice
         self.assertNotIn(RELAY, [c.uri for c in server.connections])
-        [request] = fake.requests
+        self.assertEqual(
+            [(s.machine_id, t.get_secret_value()) for s, t in listed],
+            [(SERVER_ID, SERVER_TOKEN), (SHARED_ID, "fake-shared-token")],
+        )
+        self.assertNotIn("fake-shared-token", repr(listed))
+        request = fake.requests[0]
         self.assertEqual(request.url.params["includeHttps"], "1")
         self.assertEqual(request.url.params["includeRelay"], "0")
+
+    async def test_a_plain_http_try_last_for_each_local_connection(self) -> None:
+        fake = FakePlex()
+        connections = https_only(resource()["connections"]) + [
+            {"protocol": "https", "address": "fd00::20", "port": 32400, "local": True,
+             "uri": "https://fd00--20.a1b2c3d4e5f6.plex.direct:32400"},
+            {"protocol": "https", "address": "nas.example", "port": 32400, "local": True,
+             "uri": "https://nas.a1b2c3d4e5f6.plex.direct:32400"},  # not an address: no try
+        ]  # fmt: skip
+        fake.resources_data = [resource(connections=connections)]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fake)) as http:
+            [server] = await PlexClient(http, client_id=lambda: CLIENT_ID).servers(TOKEN)
+        order = [c.uri for c in connection_order(server)]
+        self.assertEqual(order[-2:], [LOCAL_HTTP, "http://[fd00::20]:32400"])
+        self.assertEqual(order[0], LOCAL_HTTPS)
+        self.assertLess(order.index(REMOTE), order.index(LOCAL_HTTP))  # the remote one first
+        self.assertTrue(all(c.plain for c in connection_order(server)[-2:]))
+
+    def test_plain_connections_only_local_addresses_with_a_port(self) -> None:
+        from app.models.plex import PlexConnectionReply
+
+        def reply(address: str, port: int | None = 32400, local: bool = True) -> PlexConnectionReply:
+            return PlexConnectionReply(address=address, port=port, uri="https://x.plex.direct", local=local)
+
+        found = plain_connections(
+            [reply("192.168.1.20"), reply("192.168.1.20"), reply("203.0.113.7", local=False),
+             reply("10.0.0.5", None), reply("10.0.0.6", 70000), reply("")],
+            [],
+        )  # fmt: skip
+        self.assertEqual([c.uri for c in found], [LOCAL_HTTP])
 
 
 # -- the service ---------------------------------------------------------------------------------
@@ -729,13 +783,83 @@ class CheckTests(PlexTestCase):
         self.assertEqual(len((await self.db.plex.contents())[0]), 5)
 
     async def test_no_server_on_the_account(self) -> None:
-        # Only the player and a friend's shared server.
+        # Only the player.
         self.fake.resources_data = [
-            r for r in fixture("resources.json") if r["clientIdentifier"] != SERVER_ID
+            r for r in fixture("resources.json") if r["clientIdentifier"] == "player-0001"
         ]
         await self.plex.check()
         self.assertIs((await self.plex.status()).problem, PlexProblem.NO_SERVER)
         self.assertEqual(await self.db.plex.contents(), (frozenset(), frozenset()))
+
+    async def test_the_own_server_is_preferred_over_a_shared_one(self) -> None:
+        await self.plex.check()  # resources.json: Alex-NAS (owned) and Sam's server (shared)
+        status = await self.plex.status()
+        self.assertIsNone(status.problem)
+        self.assertEqual(self.settings.current.plex_server_id, SERVER_ID)
+        self.assertEqual(self.settings.current.plex_server_token.get_secret_value(), "")
+        self.assertEqual([s.machine_id for s in status.servers], [SERVER_ID, SHARED_ID])
+        server_calls = [r for r in self.fake.requests if r.url.host != "plex.tv"]
+        self.assertTrue(all(r.headers.get("X-Plex-Token") == TOKEN for r in server_calls))
+
+    async def test_a_shared_or_home_server_takes_its_own_token(self) -> None:
+        self.fake.resources_data = [resource(owned=False, home=True)]
+        self.fake.server_token = SERVER_TOKEN
+        with capture_logs("app", "httpx", "httpcore") as lines:
+            await self.plex.check()
+        self.assertIsNone((await self.plex.status()).problem)
+        self.assertEqual(len((await self.db.plex.contents())[0]), 5)
+        current = self.settings.current
+        self.assertEqual(current.plex_server_token.get_secret_value(), SERVER_TOKEN)
+        self.assertEqual(server_token(current), SERVER_TOKEN)
+        for request in self.fake.requests:  # plex.tv the account's, the server its own
+            wanted = TOKEN if request.url.host == "plex.tv" else SERVER_TOKEN
+            self.assertEqual(request.headers.get("X-Plex-Token"), wanted)
+            self.assertNotIn(SERVER_TOKEN, str(request.url))
+        for line in lines:
+            self.assertNotIn(SERVER_TOKEN, line)
+        self.assertNotIn(SERVER_TOKEN, repr(current))
+        self.assertNotIn(SERVER_TOKEN, repr(await self.plex.status()))
+        # The screen calls and the next check too (the stored address first).
+        self.fake.requests.clear()
+        await self.plex.locations()
+        await self.plex.check()
+        self.assertTrue(self.fake.requests)
+        for request in self.fake.requests:
+            wanted = TOKEN if request.url.host == "plex.tv" else SERVER_TOKEN
+            self.assertEqual(request.headers.get("X-Plex-Token"), wanted)
+        await self.plex.disconnect()
+        self.assertEqual(self.settings.current.plex_server_token.get_secret_value(), "")
+
+    async def test_choosing_a_shared_server_and_back_to_the_own(self) -> None:
+        shared = resource(owned=False, clientIdentifier=SHARED_ID, name="Sam's server",
+                          accessToken="fake-shared-token")  # fmt: skip
+        self.fake.resources_data = [resource(), resource(clientIdentifier=LAPTOP_ID), shared]
+        await self.plex.check()
+        self.assertIs((await self.plex.status()).problem, PlexProblem.CHOOSE_SERVER)
+        await self.plex.choose_server(SHARED_ID)
+        self.assertEqual(
+            self.settings.current.plex_server_token.get_secret_value(), "fake-shared-token"
+        )
+        await self.plex.choose_server(LAPTOP_ID)
+        self.assertEqual(self.settings.current.plex_server_token.get_secret_value(), "")
+
+    async def test_only_a_shared_server_is_used(self) -> None:
+        self.fake.resources_data = [resource(owned=False)]
+        self.fake.server_token = SERVER_TOKEN
+        await self.plex.check()
+        self.assertIsNone((await self.plex.status()).problem)
+        self.assertEqual(self.settings.current.plex_server_id, SERVER_ID)
+
+    async def test_a_router_that_blocks_plex_direct_names_the_plain_address_answers(
+        self,
+    ) -> None:
+        self.fake.resources_data = [resource(connections=https_only(resource()["connections"]))]
+        self.fake.answering = {LOCAL_HTTP}  # *.plex.direct doesn't resolve here
+        await self.plex.check()
+        self.assertIsNone((await self.plex.status()).problem)
+        self.assertEqual(self.settings.current.plex_server_uri, LOCAL_HTTP)
+        self.assertEqual(self.fake.identities()[-1], LOCAL_HTTP)  # the last try
+        self.assertEqual(len((await self.db.plex.contents())[0]), 5)
 
     async def test_one_check_at_a_time(self) -> None:
         await asyncio.gather(self.plex.check(), self.plex.check(), self.plex.check())
@@ -817,6 +941,7 @@ class SecretTests(PlexTestCase):
         settings = Settings(
             plex_client_id=CLIENT_ID,
             plex_token=TOKEN,
+            plex_server_token=SERVER_TOKEN,
             plex_server_id=SERVER_ID,
             plex_server_name="Alex-NAS",
             plex_server_uri=LOCAL_HTTP,
@@ -825,6 +950,7 @@ class SecretTests(PlexTestCase):
         )
         stored = settings_for_backup(settings, include_secrets=True)
         self.assertNotIn(TOKEN, json.dumps(stored))
+        self.assertNotIn(SERVER_TOKEN, json.dumps(stored))
         self.assertFalse({name for name in stored if name.startswith("plex_")})
         self.assertIn("tmdb_api_key", stored)  # the other secrets do go in when asked
         # A load keeps this PC's Plex link.

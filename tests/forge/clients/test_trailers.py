@@ -124,7 +124,7 @@ class TrailerTestCase(ForgeDbTestCase):
 
     def serve_good_tools(self, zipped: bytes | None = None) -> bytes:
         exe = b"MZ fake yt-dlp"
-        zipped = zipped if zipped is not None else _zip({"ff/bin/ffmpeg.exe": b"ff"})
+        zipped = zipped if zipped is not None else _zip({"ff/bin/ffmpeg.exe": b"ff", "ff/bin/ffprobe.exe": b"fp"})
         self.web.add("/y/yt-dlp.exe", exe)
         self.web.add("/y/SHA2-256SUMS", _sums("yt-dlp.exe", exe))
         self.web.add("/f/ff.zip", zipped)
@@ -270,6 +270,7 @@ class InstallTest(TrailerTestCase):
         zipped = _zip(
             {
                 "ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe": b"ff",
+                "ffmpeg-master-latest-win64-gpl-shared/bin/ffprobe.exe": b"fp",
                 "ffmpeg-master-latest-win64-gpl-shared/bin/avcodec-61.dll": b"dll",
                 "ffmpeg-master-latest-win64-gpl-shared/doc/readme.txt": b"doc",
             }
@@ -282,6 +283,7 @@ class InstallTest(TrailerTestCase):
         assert (tools / "yt-dlp.exe").read_bytes() == exe
         assert (tools / "ffmpeg" / "bin" / "ffmpeg.exe").read_bytes() == b"ff"
         assert (tools / "ffmpeg" / "bin" / "avcodec-61.dll").exists()
+        assert (tools / "ffmpeg" / "bin" / "ffprobe.exe").read_bytes() == b"fp"
         assert not (tools / "ffmpeg" / "doc").exists()
         assert not list(tools.glob("*.part")) and not list(tools.glob("*.zip"))
         assert svc.tools_present()

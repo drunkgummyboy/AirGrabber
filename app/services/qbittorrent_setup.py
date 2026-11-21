@@ -26,7 +26,7 @@ a non-empty file runs `upgrade()` and its older defaults, e.g. torrent queueing 
 
 The save path for "Where finished downloads end up" is read from `[BitTorrent]
 Session\\DefaultSavePath` (4.4+), else `[Preferences] Downloads\\SavePath` (4.3 and older), else the
-user's Downloads folder (qBittorrent's own default).
+user's Downloads folder where Windows has it (qBittorrent's own default; `default_save_path`).
 
 AirGrabber's look (app/services/qbittorrent_theme.py, when a ThemeFolder is given): the setup also
 copies the theme into AirGrabber's data folder and sets `[Preferences] General\\UseCustomUITheme=true`
@@ -70,6 +70,7 @@ from app.models import QBittorrentState
 from app.services import qbittorrent_webui as webui
 from app.services.qbittorrent_theme import ThemeFolder
 from app.services.qbittorrent_webui import PortCheck, WebUiLogin, WebUiResult
+from app.windows_user import downloads_folder
 
 log = logging.getLogger(__name__)
 
@@ -157,8 +158,10 @@ def set_aside(folders: tuple[Path, ...], when: str) -> int:
 
 
 def default_save_path(home: Path | None = None) -> Path:
-    """qBittorrent's own default save folder: the user's Downloads folder."""
-    return (home if home is not None else Path.home()) / "Downloads"
+    """qBittorrent's own default save folder: the user's Downloads folder, where Windows has it
+    (`windows_user.downloads_folder`; qBittorrent asks Qt, which asks Windows too); `home`
+    (tests): its Downloads."""
+    return home / "Downloads" if home is not None else downloads_folder()
 
 
 # -- reading and editing the INI text (pure) ------------------------------------------------------

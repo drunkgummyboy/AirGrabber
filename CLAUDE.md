@@ -68,7 +68,10 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   guessit is the one optional package Forge needs (below `# optional` in requirements.txt), imported only
   inside `app/forge/core/parser.py`'s functions; no tkinterdnd2, no aiohttp. Tests in `tests/forge/`
   (`tests/forge/base.py`). Its Dutch is the second catalog, `app/i18n_nl_forge.py`. yt-dlp / ffmpeg go
-  to `AppPaths.forge / "tools"`, never under `app/`. Explorer drops (`app/forge/ui/file_drops.py`, attached to
+  to `AppPaths.forge / "tools"`, never under `app/`. They come with AirGrabber (`app/services/media_tools.py`, owner's
+  decision 2026-11-21): install.ps1 runs `main.py --fetch-tools`, and a start that lacks them fetches them in the
+  background (`MediaTools.run`, spawned from `MainWindow._start`, retried hourly), checksum-verified; the trailers' fetch
+  is the same one (one lock per tools folder). Explorer drops (`app/forge/ui/file_drops.py`, attached to
   the main window at its start) are ctypes on the Tk thread behind a seam (tests: fakes). Its Series / Movies
   folders are marked in Settings → Folders' lists (carried once, `folders_carry.py`).
 - The bridges between AirGrabber and Forge (phase 2): no SQL across `airgrabber.db` and `forge.db`.
@@ -135,7 +138,11 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   accept its legal notice for the user. Settings' "Reinstall qBittorrent…" (winget `--force`) only
   while it isn't running; its Clean start renames that folder and `%LOCALAPPDATA%\qBittorrent`
   aside (`set_aside`), never deletes them. install.ps1 installs qBittorrent only when Windows has no
-  torrent program (`-NoQBittorrent` skips it) and sets it up through `main.py --setup-qbittorrent`.
+  torrent program (`-NoQBittorrent` skips it) and sets it up through `main.py --setup-qbittorrent`; it also fetches the
+  video tools through `main.py --fetch-tools` (a failure is only a line). New settings start at qBittorrent
+  (`remote_kind`); stored settings without the key keep Synology (`stored_settings`). `app/windows_user.py` (stdlib only)
+  is what Windows says about the user: the Downloads folder (known folder) for new settings and qBittorrent's default
+  save folder; tests never read this PC's (tests/__init__.py fakes it).
   AirGrabber may register qBittorrent for magnet links / .torrent files (`QBittorrentLinker`,
   app/services/torrent_app.py) under HKCU\Software\Classes only (never UserChoice or HKLM), and
   only when no other torrent program is set; tests use a fake registry.
@@ -161,7 +168,13 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - Plex (`app/services/plex.py`): sign-in only through Plex's PIN flow (never a password). The token
   (`plex_token`) is a secret: the `X-Plex-Token` header only, never in a URL, log line, message or
   exception text; never in a backup, not even with keys and passwords (`MACHINE_SECRETS` in
-  `app/services/backup.py`; all `plex_*` settings are this PC's). Plex requests never follow redirects,
+  `app/services/backup.py`; all `plex_*` settings are this PC's). A Plex Home or shared server's own token (plex.tv's
+  `accessToken`, `plex_server_token`; `server_token()`) is the same secret: plex.tv calls take the account's token, the
+  server's calls its own when it has one; it is in `MACHINE_SECRETS` too. Connections are tried in `connection_order`,
+  each local connection's plain `http://address:port` last (routers that block `*.plex.direct`). ▶ Play finds a Plex
+  file as Plex names it (a Windows path), then in Settings → Folders' folders (read-only existence checks, whatever the
+  switch), then in MediaForge's folder; each folder in its own thread within FIND_TIMEOUT_S; a folder that doesn't
+  answer is TIMED_OUT, never "not in your folder". Plex requests never follow redirects,
   their URLs are never logged, nor `str(httpx_exc)`. Logs give ids and counts only. What counts as
   had is what is in Plex (`plex_episodes` / `plex_movies`, replaced per Plex check) or in the user's
   own folders (`folder_episodes` / `folder_movies`, replaced per folder check), or what left the
@@ -194,9 +207,16 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   Before, it was only on a PC whose data folder held `phone-connection.enabled` (`ENABLED_MARKER`); setting the constant
   back to False brings that back, with the hidden switch (seven quick clicks on Settings → Updates & backup's
   "Version …" write or delete that file, `switch_here`; while open, the clicks aren't bound: `can_switch`). The Companion
-  app's download code (`app/ui/phone_app.py`, `PHONE_APP_URL`: the APK as the `phone-app` GitHub release's file,
-  replaced per Companion version, uploaded only with the owner's OK). Home addresses and paired phones only; only a token's hash is
-  kept; the Plex token only in `/v1/pair`'s and `/v1/hello`'s answers; release links never leave the PC; the log gets no
+  app's download code (`app/ui/phone_app.py`; `PHONE_APP_URL` in `app/services/phone/companion_app.py`: the APK as the
+  `phone-app` GitHub release's file, replaced per Companion version, uploaded only with the owner's OK; hello's
+  `app_update` hands out its version.json and APK links). Home addresses and paired phones only (private IPv4,
+  100.64/10, IPv6 ULA and link-local); only a token's hash is kept; the Plex token the server takes (`server_token`: a
+  shared / Home server's own) only in `/v1/pair`'s and `/v1/hello`'s answers. Ports: the phone server tries
+  `Settings.phone_port`, then 58760, 47760, a free one; the finder listens on 58761 and 47761; play links try 58762,
+  47762, a free one; links name the bound port; hello says `play_port`. `firewall.py` asks Windows PowerShell (a
+  subprocess of the loop, 20 s limit) whether the network is Public or a firewall rule blocks this Python; the page
+  says so naming "Python"; its output (program paths) is never logged. A share that doesn't answer in time is 504
+  `folder_timeout`, a file that is gone 404 (/v1/library…, the play-link POST, /v1/cast-stream); release links never leave the PC; the log gets no
   token, code, address or exception text. `cryptography` and `segno` are optional (below `# optional`), imported only
   inside `certificate.py`'s and `code_picture`'s functions; without them the page says so.
   Roles: each phone's own Library manager tick in Settings decides its role (the first phone pairs as one; `manager` in
@@ -217,14 +237,15 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
   section), `plex` stays null without Plex, `api_version` 1. The folder library's routes (`library.py`, `/v1/library…`,
   contract `docs/folder-library/2026-11-16-companion-contract.md`) answer whenever the folders are on, with Plex or
   without (`_while_folders_on`; 409 `plex_library` only while they are off): lists
-  from the database, every share read in a thread under `READ_TIMEOUT_S` (a share asleep is 404 `no_longer_there`,
+  from the database, every share read in a thread under `READ_TIMEOUT_S` (a share asleep is 504 `folder_timeout`,
   never a window that waits), places and watched marks the phone's own person's (`PairedPhone.profile_id`), never the
-  PC's. Play links (`play_links.py`, for the phone's player and TVs): port 58762, plain http, home addresses only, a
+  PC's. Play links (`play_links.py`, for the phone's player and TVs): the ports above, plain http, home addresses only, a
   `secrets` token good for 6 h, in memory only; the link, its token, the address and the path are never logged.
   Phone-sized copies (`copies.py`, contract in the Companion's docs/2026-11-09-phone-sized-copies.md): a 4K film fetched
   from Plex into `<data>\phone-copies` (a folder library film's made straight from the PC's own file, `local_source`)
-  and made 1080p HEVC on the card (MediaForge's ffmpeg, `hevc_nvenc`), one at a time; Send to phone takes
-  a folder video's key (`movie:<tmdb>`, `episode:<tmdb>:<s>:<e>`; `_PHONE_KEY`), the copies a Plex ratingKey or `movie:<tmdb>` only (`_film_key`), logged only as its kind (`_logged`); `hello`'s `phone_copies` says whether the card works. Send to phone's Phone-sized tick (4K films) starts one from
+  and made 1080p HEVC with the video tools' ffmpeg on the first encoder that makes a tiny picture (`hevc_nvenc`,
+  `hevc_qsv`, `hevc_amf`, else the processor's `libx265`; a card that fails a film falls back to `libx265`), one at a time; Send to phone takes
+  a folder video's key (`movie:<tmdb>`, `episode:<tmdb>:<s>:<e>`; `_PHONE_KEY`), the copies a Plex ratingKey or `movie:<tmdb>` only (`_film_key`), logged only as its kind (`_logged`); `hello`'s `phone_copies` says whether any encoder works. Send to phone's Phone-sized tick (4K films) starts one from
   the PC at once (`phone_sized` in the order; cancelling drops it; `resume_copies` after a restart). The file goes out as a `FileReply` (server.py, Range).
   ffmpeg runs as a subprocess of the loop (no threads); its output holds paths: never logged. Tests fake Plex and ffmpeg.
   Cast sound streams (`cast_stream.py`, owner's OK 2026-11-21; docs/companion/2026-11-21-cast-sound-stream.md): for a Cast TV

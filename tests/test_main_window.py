@@ -43,6 +43,8 @@ from app.ui.main_window import (
     typing_in,
     update_notice,
     went_back_notice,
+    window_minimum,
+    window_place,
 )
 
 # Settings no page shows: connections, how downloads are handed over, the first-run marker,
@@ -75,7 +77,7 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "prowlarr_url": "http://127.0.0.1:9696",
     "prowlarr_api_key": "0123456789abcdef0123456789abcdef",
     "prowlarr_seeded_url": "http://127.0.0.1:9696",
-    "remote_kind": "qbittorrent",
+    "remote_kind": "synology",  # new settings start at qBittorrent
     "remote_url": "https://nas.local:5001",
     "movie_remote_destination": "/downloads/movies",
     "remote_username": "alex",
@@ -122,6 +124,7 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     # Plex: a check that changes what counts as had reloads the pages itself.
     "plex_client_id": "00000000-0000-4000-8000-000000000001",
     "plex_token": "fake-plex-token",
+    "plex_server_token": "fake-server-token",
     "plex_server_id": "a1b2",
     "plex_server_name": "Alex-NAS",
     "plex_server_uri": "http://192.168.1.20:32400",
@@ -134,6 +137,7 @@ OFF_PAGE_CHANGES: dict[str, Any] = {
     "phone_connection_on": True,
     "phone_pc_id": "a1b2",
     "phone_fingerprint": "c3d4",
+    "phone_port": 47760,
     "recent_searches": ("Reacher",),
     "blocked_groups": ("FAKE",),
     "learned_groups": ("NTb",),
@@ -247,6 +251,40 @@ class ClickOutsideTests(unittest.TestCase):
         )
         MainWindow._clicked_in_main(window)
         self.assertEqual(closed, ["panels"])
+
+
+class WindowSizeTests(unittest.TestCase):
+    """The window's smallest size by its screen's work area (physical px) and scaling."""
+
+    SCREENS = {
+        "1366x768 at 125 %": ((0, 0, 1366, 708), 1.25),
+        "1920x1080 at 175 %": ((0, 0, 1920, 996), 1.75),
+        "2256x1504 at 200 %": ((0, 0, 2256, 1408), 2.0),
+    }
+
+    def test_the_minimum_fits_small_screens(self) -> None:
+        for name, (area, scaling) in self.SCREENS.items():
+            with self.subTest(name):
+                width, height = window_minimum(area, scaling)
+                left, top, right, bottom = area
+                # With Windows' frame around it, the window still fits the work area.
+                self.assertLessEqual((width + 16) * scaling, right - left)
+                self.assertLessEqual((height + 40) * scaling, bottom - top)
+                self.assertGreater(width, 1000)  # narrower than 1220, not much narrower
+
+    def test_large_screens_keep_the_old_minimum(self) -> None:
+        self.assertEqual(window_minimum((0, 0, 2560, 1392), 1.5), (1220, 640))
+        self.assertEqual(window_minimum((0, 0, 1920, 1032), 1.0), (1220, 640))
+
+    def test_placed_on_the_work_area(self) -> None:
+        # The usual size where there is room, centred on the work area (a taskbar on top).
+        self.assertEqual(window_place((0, 60, 3840, 2160), 1.5, 1650, 900), (1650, 900, 682, 435))
+        # Smaller on a small screen, still on it.
+        width, height, x, y = window_place((0, 0, 1366, 708), 1.25, 1650, 900)
+        self.assertEqual((width, height), (1052, 526))
+        self.assertGreaterEqual(x, 0)
+        self.assertLessEqual(x + width * 1.25, 1366)
+        self.assertGreaterEqual(y, 0)
 
 
 class TypingInTests(unittest.TestCase):

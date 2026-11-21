@@ -14,7 +14,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest import mock
 from urllib.parse import urlsplit
 
@@ -22,6 +22,7 @@ import httpx
 
 from app.i18n import t
 from app.models.plex import LibraryKind, PlexTitle, PlexVideo
+from app.services.media_tools import TOOLS_COMING_TEXT
 from app.services.phone import cast_stream as cast_module
 from app.services.phone.cast_stream import (
     MAX_STREAMS,
@@ -205,12 +206,42 @@ class RecipeTests(unittest.TestCase):
         self.assertNotIn("-tag:v", joined)  # not HEVC: no hvc1
 
     def test_read_probe(self) -> None:
-        self.assertEqual(read_probe(probe_json()), Probed("hevc", (8, 2), 9960.25))
+        self.assertEqual(
+            read_probe(probe_json()),
+            Probed("hevc", (8, 2), 9960.25, 2160, False, ("truehd", "truehd"), 0),
+        )
         self.assertEqual(read_probe({"streams": [{"codec_type": "video", "codec_name": "h264",
                                                   "duration": "12"}]}),
-                         Probed("h264", (), 12.0))  # fmt: skip
+                         Probed("h264", (), 12.0, None, False, (), None))  # fmt: skip
         self.assertIsNone(read_probe({"streams": [{"codec_type": "audio"}]}))
         self.assertIsNone(read_probe({}))
+
+    def test_hdr_height_and_the_default_sound(self) -> None:
+        def video(**more: Any) -> dict[str, Any]:
+            return {"codec_type": "video", "codec_name": "HEVC", "height": 1608, **more}
+
+        sounds = [
+            {"codec_type": "audio", "codec_name": "eac3", "channels": 6},
+            {"codec_type": "audio", "codec_name": "AC3", "channels": 6,
+             "disposition": {"default": 1}},
+        ]  # fmt: skip
+        for stream, hdr in (
+            (video(color_transfer="smpte2084"), True),  # HDR10
+            (video(color_transfer="arib-std-b67"), True),  # HLG
+            (video(side_data_list=[{"side_data_type": "DOVI configuration record"}]), True),
+            (video(color_transfer="bt709"), False),
+            (video(), False),
+        ):
+            with self.subTest(stream=stream):
+                probed = read_probe({"streams": [stream, *sounds]})
+                assert probed is not None
+                self.assertEqual(probed.hdr, hdr)
+                self.assertEqual((probed.video_codec, probed.height), ("hevc", 1608))
+                self.assertEqual(probed.sound_codecs, ("eac3", "ac3"))
+                self.assertEqual(probed.default_sound, 1)  # the one marked default, not the first
+                self.assertEqual(probed.sound_codec(probed.default_sound), "ac3")
+                self.assertIsNone(probed.sound_codec(None))
+                self.assertIsNone(probed.sound_codec(5))
 
 
 # -- making a link: Plex's files through ▶ Play's lookup -----------------------------------------
@@ -246,7 +277,7 @@ class PlexLinkTests(PlexTestCase):
 
         self.playback = PlaybackService(self.plex, folders, exists=lambda path: path in self.here)
         self.programs = Programs()
-        self.own: dict[str, Path] = {
+        self.own: dict[str, Path | Literal["timed_out"]] = {
             FOLDER_FILM_KEY: Path(FOLDER_FILM),
             FOLDER_EPISODE_KEY: Path(FOLDER_EPISODE),
         }
@@ -256,11 +287,11 @@ class PlexLinkTests(PlexTestCase):
         self.cast = self.make()
 
     def make(self, tools: Path | None = None) -> CastStreams:
-        async def own_file(key: str) -> Path | None:
+        async def own_file(key: str) -> Path | Literal["timed_out"] | None:
             self.asked_own.append(key)
             return self.own.get(key)
 
-        return CastStreams(
+        cast = CastStreams(
             self.plex,
             self.playback,
             tools or self.tools,
@@ -269,6 +300,8 @@ class PlexLinkTests(PlexTestCase):
             run=self.programs.run,
             now=lambda: NOW,
         )
+        cast.serving(PLAY_PORT)  # as the play link server says once it listens there
+        return cast
 
     async def ask(self, body: dict[str, Any], cast: CastStreams | None = None) -> Reply:
         reply = await (cast or self.cast).routes()[ROUTE](request(body))
@@ -289,7 +322,17 @@ class PlexLinkTests(PlexTestCase):
         self.assertEqual(
             reply.body["expires_at"], (NOW + timedelta(hours=PLAY_LINK_HOURS)).isoformat()
         )
-        self.assertEqual(set(reply.body), {"url", "duration_s", "expires_at"})
+        self.assertEqual(
+            {key: reply.body[key] for key in set(reply.body) - {"url", "expires_at"}},
+            {
+                "duration_s": 9960.25,
+                "video_codec": "hevc",
+                "height": 2160,
+                "hdr": False,
+                "audio_codec": "truehd",  # the chosen track as it is in the file
+                "audio_codec_out": "aac",  # and as the TV gets it
+            },
+        )
         asked = [one.url.path for one in self.fake.requests]
         self.assertIn("/library/metadata/3001", asked)
         self.assertFalse(any("/library/parts/" in path for path in asked))  # never read via Plex
@@ -399,6 +442,13 @@ class PlexLinkTests(PlexTestCase):
                 self.assertEqual(reply.status, 409)
                 self.assertEqual(reply.body, {"error": "no_ffmpeg", "message": t(NO_FFMPEG_TEXT)})
         self.assertTrue(self.cast.available)
+        # They come with AirGrabber: no "add trailers to a preset"; the fetcher says where they are.
+        self.assertEqual(NO_FFMPEG_TEXT, TOOLS_COMING_TEXT)
+        cast = CastStreams(
+            self.plex, self.playback, self.root / "none", missing_text=lambda: "tried again later"
+        )
+        reply = await self.ask({"video": FOLDER_FILM_KEY}, cast)
+        self.assertEqual(reply.body, {"error": "no_ffmpeg", "message": "tried again later"})
 
     async def test_no_plex(self) -> None:
         await self.settings.update(plex_token="")
@@ -411,6 +461,60 @@ class PlexLinkTests(PlexTestCase):
         reply = await self.ask({"video": "3001"})
         self.assertEqual((reply.status, reply.body["error"]), (502, "failed"))
         self.assertEqual(self.programs.probed, [])
+
+    async def test_a_share_asleep_is_504_folder_timeout_not_404(self) -> None:
+        async def asleep(title: PlexTitle, video: PlexVideo) -> Located | PlayOutcome:
+            return PlayOutcome("", "movie", problem=PlayProblem.TIMED_OUT)
+
+        with mock.patch.object(self.playback, "locate", asleep):
+            reply = await self.ask({"video": "3001"})
+        self.assertEqual(
+            (reply.status, reply.body),
+            (504, {"error": "folder_timeout",
+                   "message": t("The folder didn't answer in time. Try again.")}),
+        )  # fmt: skip
+        self.assertEqual(self.programs.probed, [])
+
+    async def test_a_folder_videos_share_asleep_is_504_too(self) -> None:
+        self.own[FOLDER_FILM_KEY] = "timed_out"  # find_copy's TIMED_OUT
+        reply = await self.ask({"video": FOLDER_FILM_KEY})
+        self.assertEqual((reply.status, reply.body["error"]), (504, "folder_timeout"))
+        self.assertEqual(self.programs.probed, [])
+
+    async def test_the_link_names_the_play_link_servers_own_port(self) -> None:
+        self.cast.serving(47762)  # 58762 couldn't be bound
+        reply = await self.ask({"video": "3001"})
+        self.assertEqual(urlsplit(reply.body["url"]).port, 47762)
+        self.cast.serving(None)  # it isn't running: no link would work
+        reply = await self.ask({"video": "3001"})
+        self.assertEqual((reply.status, reply.body["error"]), (503, "failed"))
+
+    async def test_without_sound_no_codecs_for_it(self) -> None:
+        self.programs.probe = probe_json(codec="h264", sounds=())
+        reply = await self.ask({"video": "3001"})
+        self.assertEqual(reply.status, 200, reply.body)
+        self.assertEqual(
+            (reply.body["video_codec"], reply.body["audio_codec"], reply.body["audio_codec_out"]),
+            ("h264", None, None),
+        )
+
+    async def test_the_quick_probe_for_play_links(self) -> None:
+        self.programs.probe = probe_json(codec="av1")
+        probed = await self.cast.quick_probe(Path(FOLDER_FILM))
+        assert probed is not None
+        self.assertEqual((probed.video_codec, probed.height), ("av1", 2160))
+        self.assertEqual(self.probed_file(), FOLDER_FILM)
+        timeouts: list[float] = []
+
+        async def run(args: Sequence[str], timeout_s: float) -> tuple[int, bytes]:
+            timeouts.append(timeout_s)
+            return -1, b""  # didn't end in time
+
+        with mock.patch.object(self.cast, "_run", run):
+            self.assertIsNone(await self.cast.quick_probe(Path(FOLDER_FILM)))
+        self.assertEqual(timeouts, [cast_module.QUICK_PROBE_S])
+        self.assertLessEqual(cast_module.QUICK_PROBE_S, 10)
+        self.assertIsNone(await self.make(self.root / "no tools").quick_probe(Path(FOLDER_FILM)))
 
     async def test_audio_and_channels_are_kept_for_the_stream(self) -> None:
         links = PlayLinks(cast=self.cast)

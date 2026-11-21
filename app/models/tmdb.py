@@ -160,17 +160,15 @@ class TMDBMovieDetails(_Wire):
     release_dates: TMDBReleaseDates = Field(default_factory=TMDBReleaseDates)
 
     def to_details(self, region: str) -> MovieDetails:
-        releases = self.release_dates.for_region(region)
+        """The film's details with `region`'s certification and release dates."""
+        own = self.release_dates.for_region(region)
         return MovieDetails(
             id=self.id,
             imdb_id=self.imdb_id or self.external_ids.imdb_id,
             runtime=self.runtime or None,  # TMDB reports 0 when unknown
-            certification=_certification(releases),
-            digital_release=_earliest(releases, ReleaseType.DIGITAL),
-            theatrical_release=(
-                _earliest(releases, ReleaseType.THEATRICAL)
-                or _earliest(releases, ReleaseType.THEATRICAL_LIMITED)
-            ),
+            certification=_certification(own),
+            digital_release=_earliest(own, ReleaseType.DIGITAL),
+            theatrical_release=_theatrical(own),
         )
 
 
@@ -548,6 +546,12 @@ def to_person_credit(raw: object) -> PersonCredit | None:
 def _earliest(releases: Sequence[TMDBReleaseDate], release_type: ReleaseType) -> date | None:
     days = [day for r in releases if r.type == release_type and (day := r.day) is not None]
     return min(days, default=None)
+
+
+def _theatrical(releases: Sequence[TMDBReleaseDate]) -> date | None:
+    return _earliest(releases, ReleaseType.THEATRICAL) or _earliest(
+        releases, ReleaseType.THEATRICAL_LIMITED
+    )
 
 
 def _certification(releases: Sequence[TMDBReleaseDate]) -> str | None:

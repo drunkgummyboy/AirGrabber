@@ -11,13 +11,16 @@ says the server's path of the version the phone chose (`part`) or ▶ Play's own
 PlaybackService's `locate` finds it through MediaForge's Series / Movies folders), a folder library
 video's (`movie:603`, `episode:1399:1:2`) from the folder library (`own_file`, as the copies' local
 source). ffprobe reads it once (the picture's codec, each sound track's channels, the length), then
-a link is made: `http://<the address the phone used>:58762/c/<token>/stream.mp4`, good for
-PLAY_LINK_HOURS, in memory only.
+a link is made: `http://<the address the phone used>:<the play link server's port>/c/<token>/
+stream.mp4` (58762 unless that couldn't be bound: `serving`), good for PLAY_LINK_HOURS, in memory
+only. The answer also says the picture's codec, height and HDR and the sound's codec before and
+after (docs/companion/2026-11-21-portability-contract.md). A share that didn't answer in time
+(PlayProblem.TIMED_OUT) is 504 `folder_timeout`, not 404.
 
 The play link server (play_links.py) hands `/c/…` to `answer`: `GET …/stream.mp4[?t=<seconds>]`
-runs MediaForge's ffmpeg (`stream_args`) as a subprocess of the loop and pumps its fragmented MP4 to
-the TV in chunks (HTTP/1.1 chunked, the next piece only once the last one left: backpressure). No
-Range: every request is a 200 from `t`. HEAD gives the headers without starting ffmpeg. A TV that
+runs the video tools' ffmpeg (`stream_args`; app/services/media_tools.py) as a subprocess of the
+loop and pumps its fragmented MP4 to the TV in chunks (HTTP/1.1 chunked, the next piece only once
+the last one left: backpressure). No Range: every request is a 200 from `t`. HEAD gives the headers without starting ffmpeg. A TV that
 goes away, a newer request on the same token, more than MAX_STREAMS at once (the oldest goes) and
 the server stopping each end ffmpeg, which is killed and reaped.
 
@@ -41,22 +44,32 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import parse_qsl
 
 from app.i18n import N_, t
 from app.models.plex import LibraryKind, PlexTitle, PlexVideo
 from app.services.folder_library.playing import canonical_item, logged_key
+from app.services.media_tools import TOOLS_COMING_TEXT
+from app.services.phone.library import TIMED_OUT
 from app.services.phone.play_links import (
     PAUSE_S,
     PLAY_LINK_HOURS,
-    PLAY_PORT,
     TOKEN_BYTES,
     Stream,
+    not_serving,
     plain_head,
     play_url_host,
 )
-from app.services.phone.server import READ_TIMEOUT, Reply, Request, Route, bad_request, error_reply
+from app.services.phone.server import (
+    READ_TIMEOUT,
+    Reply,
+    Request,
+    Route,
+    bad_request,
+    error_reply,
+    folder_timeout,
+)
 from app.services.playback import Located, PlayOutcome, PlayProblem
 from app.services.plex import PlexError
 
@@ -70,6 +83,7 @@ MAX_PART_KEY = 500
 MAX_START_S = 7 * 24 * 3600.0  # no film is longer than a week
 STEREO_RATE, SURROUND_RATE = "256k", "384k"
 PROBE_TIMEOUT_S = 30.0  # ffprobe reading the file's head (a NAS asleep wakes in that time)
+QUICK_PROBE_S = 5.0  # a play link's codecs (`quick_probe`): the share has just answered
 FIRST_BYTES_S = 60.0  # for ffmpeg's first piece of the stream (it opens and seeks first)
 REAP_S = 5.0  # for a killed ffmpeg to be gone
 CHUNK = 64 * 1024
@@ -88,10 +102,9 @@ _STREAM_HEADERS = (
     ),
 )
 
-NO_FFMPEG_TEXT = N_(
-    "This PC doesn't have MediaForge's video tools yet, so add trailers to a MediaForge preset "
-    "once to get them."
-)
+# Without the video tools (they come with AirGrabber, app/services/media_tools.py): what the
+# tools' fetcher says (being fetched, or couldn't be yet and tried again), this without one.
+NO_FFMPEG_TEXT = TOOLS_COMING_TEXT
 NOT_FOUND_TEXT = N_(
     "AirGrabber can't reach this video's file from this PC right now, so try again in a moment."
 )
@@ -109,12 +122,28 @@ def _utc_now() -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class Probed:
-    """What ffprobe says of a file, as far as the stream needs: the picture's codec, each sound
-    track's channels (in the file's order: `0:a:<n>`) and the length (None: not said)."""
+    """What ffprobe says of a file, as far as the stream and the phone's choice need: the
+    picture's codec (lower case), each sound track's channels (in the file's order: `0:a:<n>`),
+    the length (None: not said), the picture's height (None: not said), whether it is HDR
+    (HDR10 / HLG's colour transfer or Dolby Vision's side data), each sound track's codec (lower
+    case, the same order) and the default sound track's place (None: no sound)."""
 
     video_codec: str
     sounds: tuple[int, ...]
     duration_s: float | None
+    height: int | None = None
+    hdr: bool | None = None
+    sound_codecs: tuple[str, ...] = ()
+    default_sound: int | None = None
+
+    def sound_codec(self, place: int | None) -> str | None:
+        """The codec of sound track `place` (None: no sound, or not said)."""
+        if place is None or not 0 <= place < len(self.sound_codecs):
+            return None
+        return self.sound_codecs[place] or None
+
+
+_HDR_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})  # HDR10 (and HDR10+), HLG
 
 
 def read_probe(data: dict[str, Any]) -> Probed | None:
@@ -134,12 +163,33 @@ def read_probe(data: dict[str, Any]) -> Probed | None:
         return None
     format_ = data.get("format")
     duration = _seconds((format_ or {}).get("duration") if isinstance(format_, dict) else None)
-    return Probed(
-        video_codec=str(video.get("codec_name", "")),
-        sounds=tuple(
-            _count(one.get("channels")) for one in streams if one.get("codec_type") == "audio"
+    sounds = [one for one in streams if one.get("codec_type") == "audio"]
+    default = next(
+        (
+            place
+            for place, one in enumerate(sounds)
+            if (one.get("disposition") or {}).get("default")
         ),
+        0 if sounds else None,
+    )
+    return Probed(
+        video_codec=str(video.get("codec_name", "")).lower(),
+        sounds=tuple(_count(one.get("channels")) for one in sounds),
         duration_s=duration or _seconds(video.get("duration")),
+        height=_count(video.get("height")) or None,
+        hdr=_is_hdr(video),
+        sound_codecs=tuple(str(one.get("codec_name", "")).lower() for one in sounds),
+        default_sound=default,
+    )
+
+
+def _is_hdr(video: dict[str, Any]) -> bool:
+    if str(video.get("color_transfer", "")).lower() in _HDR_TRANSFERS:
+        return True
+    side_data = video.get("side_data_list")
+    return isinstance(side_data, list) and any(
+        isinstance(one, dict) and "dovi" in str(one.get("side_data_type", "")).lower()
+        for one in side_data
     )
 
 
@@ -285,7 +335,8 @@ class CastPlayback(Protocol):
     async def locate(self, title: PlexTitle, video: PlexVideo) -> Located | PlayOutcome: ...
 
 
-OwnFile = Callable[[str], Awaitable[Path | None]]
+# A folder video's file now; TIMED_OUT (library.py's) when a share didn't answer in time.
+OwnFile = Callable[[str], Awaitable[Path | Literal["timed_out"] | None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,27 +371,36 @@ class CastStreams:
         tools: Path,
         *,
         own_file: OwnFile | None = None,
+        missing_text: Callable[[], str] | None = None,
         start: Start = _start,
         run: Run = _run,
         now: Callable[[], datetime] = _utc_now,
     ) -> None:
-        """`tools`: MediaForge's ffmpeg bin folder (as the phone-sized copies'). `own_file(key)`:
-        the folder library's file of a video key that is there now (None: no folder library).
-        `start` / `run` / `now`: for tests (no real ffmpeg)."""
+        """`tools`: the video tools' ffmpeg bin folder (as the phone-sized copies';
+        app/services/media_tools.py). `own_file(key)`: the folder library's file of a video key
+        that is there now (None: no folder library). `missing_text()`: what to say while the
+        tools aren't there (`MediaTools.missing_text`). `start` / `run` / `now`: for tests (no
+        real ffmpeg)."""
         self._plex = plex
         self._playback = playback
         self._ffmpeg = tools / "ffmpeg.exe"
         self._ffprobe = tools / "ffprobe.exe"
         self._own_file = own_file
+        self._missing_text = missing_text
         self._start = start
         self._run = run
         self._now = now
         self._links: dict[str, _Link] = {}
         self._running: list[_Running] = []  # the oldest first
+        self._port: int | None = None  # the play link server's, while it runs (`serving`)
+
+    def serving(self, port: int | None) -> None:
+        """The play link server listens on `port` now (None: it stopped); the links name it."""
+        self._port = port
 
     @property
     def available(self) -> bool:
-        """MediaForge's ffmpeg and ffprobe are there (`/v1/hello`'s `cast_sound`)."""
+        """The video tools' ffmpeg and ffprobe are there (`/v1/hello`'s `cast_sound`)."""
         return self._ffmpeg.is_file() and self._ffprobe.is_file()
 
     @property
@@ -367,7 +427,8 @@ class CastStreams:
         if host is None:
             return bad_request()  # the phone server always knows it: can't happen through it
         if not self.available:
-            return error_reply(409, "no_ffmpeg", t(NO_FFMPEG_TEXT))
+            text = self._missing_text() if self._missing_text is not None else t(NO_FFMPEG_TEXT)
+            return error_reply(409, "no_ffmpeg", text)
         try:
             path, plex_duration = await self._file_of(video, part)
             probed = await self._probe(path)
@@ -375,6 +436,9 @@ class CastStreams:
             return refused.reply
         if probed.sounds and audio >= len(probed.sounds):
             return bad_request()  # no such sound track
+        port = self._port
+        if port is None:  # its port couldn't be bound (or it stopped meanwhile)
+            return not_serving()
         sound = audio if probed.sounds else None
         surround = channels == 6 and sound is not None and probed.sounds[sound] >= 6
         now = self._now()
@@ -395,9 +459,16 @@ class CastStreams:
         return Reply(
             200,
             {
-                "url": f"http://{host}:{PLAY_PORT}/c/{token}/{STREAM_NAME}",
+                "url": f"http://{host}:{port}/c/{token}/{STREAM_NAME}",
                 "duration_s": probed.duration_s or plex_duration,
                 "expires_at": expires.isoformat(),
+                # For the phone's choice (docs/companion/2026-11-21-portability-contract.md):
+                # the picture as it goes (copied), the chosen sound track as it was and as it goes.
+                "video_codec": probed.video_codec or None,
+                "height": probed.height,
+                "hdr": probed.hdr,
+                "audio_codec": probed.sound_codec(sound),
+                "audio_codec_out": "aac" if sound is not None else None,
             },
         )
 
@@ -407,7 +478,10 @@ class CastStreams:
         item = canonical_item(video)
         if item is not None:
             found = await self._own_file(item) if self._own_file is not None else None
-            if found is None:
+            if found == TIMED_OUT:  # a share asleep: the file may be there
+                log.info("Cast stream: a %s's folder didn't answer in time", logged_key(item))
+                raise _Refused(folder_timeout())
+            if not isinstance(found, Path):
                 log.info("Cast stream: no %s file in the folders can be reached", logged_key(item))
                 raise _Refused(_not_found())
             return found, None
@@ -431,29 +505,45 @@ class CastStreams:
                 raise _Refused(error_reply(409, "no_plex", t(NO_PLEX_TEXT)))
             if located.problem == PlayProblem.PLEX_AWAY:
                 raise _Refused(error_reply(502, "failed", t(PLEX_AWAY_TEXT)))
+            if located.problem == PlayProblem.TIMED_OUT:  # a share asleep: the file may be there
+                raise _Refused(folder_timeout())
             raise _Refused(_not_found())
         length = plex_video.duration_ms / 1000 if plex_video.duration_ms > 0 else None
         return Path(located.path), length
 
     async def _probe(self, path: Path) -> Probed:
         """What ffprobe says of the file; _Refused (404) when it can't read it in time."""
+        probed = await self._probed(path, PROBE_TIMEOUT_S, "Cast stream")
+        if probed is None:
+            raise _Refused(_not_found())
+        return probed
+
+    async def quick_probe(self, path: Path) -> Probed | None:
+        """What a quick ffprobe (QUICK_PROBE_S) says of the file (a play link's codecs); None
+        without the video tools, or when it couldn't say in time."""
+        if not self._ffprobe.is_file():
+            return None
+        return await self._probed(path, QUICK_PROBE_S, "Play link")
+
+    async def _probed(self, path: Path, timeout_s: float, what: str) -> Probed | None:
+        """ffprobe's word on the file within `timeout_s`; None when it has none (its output
+        holds the file's path: never logged)."""
         args = [
             str(self._ffprobe), "-v", "error", "-print_format", "json",
             "-show_streams", "-show_format", str(path),
         ]  # fmt: skip
         try:
-            code, out = await self._run(args, PROBE_TIMEOUT_S)
+            code, out = await self._run(args, timeout_s)
         except OSError as exc:
-            log.warning("Cast stream: ffprobe didn't start (%s)", type(exc).__name__)
-            raise _Refused(_not_found()) from None
+            log.warning("%s: ffprobe didn't start (%s)", what, type(exc).__name__)
+            return None
         probed: Probed | None = None
         if code == 0:
             with contextlib.suppress(ValueError):
                 data = json.loads(out)
                 probed = read_probe(data) if isinstance(data, dict) else None
         if probed is None:
-            log.info("Cast stream: ffprobe couldn't read the file (%d)", code)
-            raise _Refused(_not_found())
+            log.info("%s: ffprobe couldn't read the file (%d)", what, code)
         return probed
 
     # -- the stream (the play link server's /c/…) ------------------------------------------------

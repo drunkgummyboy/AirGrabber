@@ -11,10 +11,15 @@ UUID made once and kept in the settings, `plex_client_id`), X-Plex-Product, X-Pl
 `Accept: application/json`.
 
 Finding the server: plex.tv's resources (`includeHttps=1&includeRelay=0`) list the servers the
-account owns. With one it is picked; with several the user picks one in Settings
-(`choose_server`). Its connections are tried in `connection_order` (local https, the
-plex.direct addresses, first; then the other local ones; then the remote ones) and the first
-whose /identity names the server is kept (`plex_server_uri`). The next check asks that address
+account may use: its own, its Plex Home's and those shared with it (owned first). Of its own
+servers, one is picked; with none, the only other one is; with more to pick from, the user picks
+one in Settings (`choose_server`). A server that isn't the account's own is reached with its own
+token (the resource's `accessToken`, stored as `plex_server_token`; `server_token`): plex.tv
+always gets the account's token, a server its own when it has one. Its connections are tried in
+`connection_order` (local https, the plex.direct addresses, first; then the other local ones;
+then the remote ones; last, each local connection as plain http://address:port, for a router
+whose DNS-rebinding protection blocks *.plex.direct names) and the first whose /identity names
+the server is kept (`plex_server_uri`). The next check asks that address
 and plex.tv at the same time; only when it doesn't answer do the others race (all asked at once,
 the first to answer wins; of several answering together, the one first in that order).
 
@@ -57,7 +62,7 @@ was found away less than FAIL_FAST_S ago, and after a call Plex didn't answer lo
 server once (`_reach` within SCREEN_REACH_S; asked again only at a new address) before saying
 Plex is away (`_on_screen`).
 
-Secrets: the token goes in the X-Plex-Token header only, never in a URL, log line, message or
+Secrets: the token (the account's and a server's own) goes in the X-Plex-Token header only, never in a URL, log line, message or
 exception text. Request URLs are never logged, no httpx exception (which may carry a URL) is
 chained to or left as the context of a PlexError, and redirects are never followed (a header
 would travel along). Logs name ids and counts only.
@@ -67,6 +72,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import re
 import uuid
@@ -76,13 +82,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 
 from app import APP_NAME, __version__
 from app.database import PlexRepository
 from app.models.plex import (
     LibraryKind,
     PlexConnection,
+    PlexConnectionReply,
     PlexContinue,
     PlexEpisode,
     PlexFilmFile,
@@ -162,6 +169,16 @@ def plex_connected(settings: Settings) -> bool:
     """Plex is connected: a token is stored (also while the server is briefly unreachable:
     then the last list read counts). Only then does AirGrabber show what you have and miss."""
     return bool(settings.plex_token.get_secret_value())
+
+
+def server_token(settings: Settings) -> str:
+    """The token requests to the chosen server take: a Plex Home or shared server's own
+    (`plex_server_token`), else the account's (`plex_token`); "" while not connected. plex.tv's
+    calls always take the account's. A secret: the X-Plex-Token header only."""
+    account = settings.plex_token.get_secret_value()
+    if not account:
+        return ""
+    return settings.plex_server_token.get_secret_value() or account
 
 
 # -- guids -------------------------------------------------------------------------------------
@@ -396,13 +413,38 @@ def plex_folder(folder: str, locations: Sequence[tuple[str, str]]) -> tuple[str,
 
 def connection_order(server: PlexServer) -> list[PlexConnection]:
     """The order a server's connections are tried in: local https (the plex.direct
-    addresses) first, then the other local ones, then the remote ones."""
-    connections = list(server.connections)
+    addresses) first, then the other local ones, then the remote ones; AirGrabber's own plain
+    http://address:port tries (`plain_connections`) last."""
+    connections = [c for c in server.connections if not c.plain]
     return (
         [c for c in connections if c.local and c.https]
         + [c for c in connections if c.local and not c.https]
         + [c for c in connections if not c.local]
+        + [c for c in server.connections if c.plain]
     )
+
+
+def plain_connections(
+    replies: Iterable[PlexConnectionReply], listed: Iterable[str] = ()
+) -> list[PlexConnection]:
+    """Each local connection's plain http://address:port (an IPv6 address in brackets), for a
+    router whose DNS-rebinding protection doesn't resolve *.plex.direct names; one already
+    `listed` (or named twice) once. Only an IP address and a port that read."""
+    seen = set(listed)
+    found: list[PlexConnection] = []
+    for reply in replies:
+        if not reply.local or reply.relay or reply.port is None or not 0 < reply.port < 65536:
+            continue
+        try:
+            address = ipaddress.ip_address(reply.address.strip())
+        except ValueError:
+            continue
+        host = f"[{address}]" if address.version == 6 else str(address)
+        uri = f"http://{host}:{reply.port}"
+        if uri not in seen:
+            seen.add(uri)
+            found.append(PlexConnection(uri=uri, local=True, https=False, plain=True))
+    return found
 
 
 def library_kind(type_name: str) -> LibraryKind | None:
@@ -521,7 +563,14 @@ class PlexClient:
         return token or None
 
     async def servers(self, token: str) -> list[PlexServer]:
-        """The Plex Media Servers the account owns, with their connections (no relays)."""
+        """The Plex Media Servers the account may use (`resources` without their tokens)."""
+        return [server for server, _token in await self.resources(token)]
+
+    async def resources(self, token: str) -> list[tuple[PlexServer, SecretStr]]:
+        """The Plex Media Servers the account may use: its own, its Plex Home's and those
+        shared with it, the owned first (else in plex.tv's order), each with its connections
+        (no relays; `plain_connections` added) and its own token (plex.tv's `accessToken`,
+        "" when it names none)."""
         data = await self._request(
             "GET",
             f"{self._base}/api/v2/resources",
@@ -533,23 +582,29 @@ class PlexClient:
             resources = _RESOURCES.validate_python(data)
         except ValidationError:
             raise PlexError("Plex's list of servers didn't read") from None
-        return [
-            PlexServer(
+        found: list[tuple[PlexServer, SecretStr]] = []
+        for resource in resources:
+            if not resource.is_server:
+                continue
+            listed = [
+                PlexConnection(
+                    uri=connection.uri.rstrip("/"),
+                    local=connection.local,
+                    https=connection.protocol.lower() == "https",
+                )
+                for connection in resource.connections
+                if not connection.relay and connection.uri.startswith(("http://", "https://"))
+            ]
+            plain = plain_connections(resource.connections, (c.uri for c in listed))
+            server = PlexServer(
                 machine_id=resource.client_identifier,
                 name=resource.name,
-                connections=tuple(
-                    PlexConnection(
-                        uri=connection.uri.rstrip("/"),
-                        local=connection.local,
-                        https=connection.protocol.lower() == "https",
-                    )
-                    for connection in resource.connections
-                    if not connection.relay and connection.uri.startswith(("http://", "https://"))
-                ),
+                connections=(*listed, *plain),
+                owned=resource.owned,
             )
-            for resource in resources
-            if resource.is_server and resource.owned
-        ]
+            found.append((server, resource.access_token or SecretStr("")))
+        found.sort(key=lambda listed: not listed[0].owned)
+        return found
 
     # -- the server ------------------------------------------------------------------------
 
@@ -998,6 +1053,8 @@ class PlexService:
         self._clock = clock
         self._sleep = sleep
         self._servers: tuple[PlexServer, ...] = ()
+        # The last list's servers that aren't the account's own: their own tokens, by machine id.
+        self._server_tokens: dict[str, SecretStr] = {}
         self._problem: PlexProblem | None = None
         self._run: asyncio.Task[None] | None = None
         self._listeners: list[StatusListener] = []
@@ -1036,7 +1093,18 @@ class PlexService:
     # -- state ---------------------------------------------------------------------------------
 
     def _token(self) -> str:
+        """The account's token: plex.tv's calls."""
         return self._settings.current.plex_token.get_secret_value()
+
+    def _server_token(self) -> str:
+        """The chosen server's token (`server_token`): every call to the server."""
+        return server_token(self._settings.current)
+
+    def _own_token(self, server: PlexServer) -> str:
+        """What `plex_server_token` holds for `server`: its own token when it isn't the
+        account's own and plex.tv named one, else "" (the account's token is used)."""
+        token = self._server_tokens.get(server.machine_id)
+        return "" if server.owned or token is None else token.get_secret_value()
 
     @property
     def connected(self) -> bool:
@@ -1116,7 +1184,8 @@ class PlexService:
             self._changed()  # the pages show what you have and miss from now on
 
     async def choose_server(self, machine_id: str) -> None:
-        """Use the owned server `machine_id` (Settings' dropdown), then check."""
+        """Use the server `machine_id` (Settings' dropdown: the account's own, a Plex Home or a
+        shared one, with its own token), then check."""
         server = next((s for s in self._servers if s.machine_id == machine_id), None)
         if server is None:
             return
@@ -1125,6 +1194,7 @@ class PlexService:
             plex_server_id=server.machine_id,
             plex_server_name=server.name,
             plex_server_uri="",
+            plex_server_token=self._own_token(server),
             plex_sections_off=(),
         )
         log.info("Plex: server chosen (%d connections)", len(server.connections))
@@ -1153,6 +1223,7 @@ class PlexService:
                 await run
         await self._settings.update(
             plex_token="",
+            plex_server_token="",
             plex_server_id="",
             plex_server_name="",
             plex_server_uri="",
@@ -1160,6 +1231,7 @@ class PlexService:
         )
         await self._repository.clear()
         self._servers = ()
+        self._server_tokens = {}
         self._problem = None
         self._unreachable_at = None
         self._locations = None
@@ -1217,10 +1289,9 @@ class PlexService:
             raise error
 
     async def _check(self) -> None:
-        token = self._token()
         try:
-            uri = await self._reach(token)
-            scan = await self._read(uri, token)
+            uri = await self._reach(self._token())
+            scan = await self._read(uri, self._server_token())
             before = await self._repository.contents()
             await self._repository.replace(scan, self._clock())
         except _NoServer as exc:
@@ -1274,7 +1345,7 @@ class PlexService:
             return None
         if not self.connected:
             return None
-        return await self._client.picture(uri, self._token(), thumb, *POSTER_SIZE)
+        return await self._client.picture(uri, self._server_token(), thumb, *POSTER_SIZE)
 
     async def episodes(self, show: PlexTitle) -> list[PlexEpisode]:
         """A show's episodes as the Plex server has them now, by season and number, from the
@@ -1309,7 +1380,7 @@ class PlexService:
         uri = self._settings.current.plex_server_uri
         if not self.connected or not uri:
             return None
-        item = await self._client.metadata(uri, self._token(), key)
+        item = await self._client.metadata(uri, self._server_token(), key)
         if item is None:
             return None
         best = best_version(item, lambda part: bool(part.key and part.size), height_rank)
@@ -1331,7 +1402,7 @@ class PlexService:
         uri = self._settings.current.plex_server_uri
         if not self.connected or not uri:
             raise PlexUnreachable("Plex isn't connected")
-        await self._client.fetch(uri, self._token(), film.part_key, write)
+        await self._client.fetch(uri, self._server_token(), film.part_key, write)
 
     # -- ▶ Play (app/services/playback.py) ------------------------------------------------------
 
@@ -1472,13 +1543,15 @@ class PlexService:
         the phone). Raises PlexError (PlexUnreachable when it didn't answer or isn't
         connected)."""
         uri = self._connected_uri()
-        await self._client.timeline(uri, self._token(), key, state, position_ms, duration_ms)
+        await self._client.timeline(
+            uri, self._server_token(), key, state, position_ms, duration_ms
+        )
 
     async def mark_watched(self, key: str) -> None:
         """Mark `key` watched in Plex (a scrobble). Raises PlexError (PlexUnreachable when it
         didn't answer or isn't connected)."""
         uri = self._connected_uri()
-        await self._client.scrobble(uri, self._token(), key)
+        await self._client.scrobble(uri, self._server_token(), key)
 
     def _connected_uri(self) -> str:
         uri = self._settings.current.plex_server_uri
@@ -1513,7 +1586,7 @@ class PlexService:
             return 0
         if not uri:
             raise PlexUnreachable("Plex's address isn't known yet")
-        token = self._token()
+        token = self._server_token()
         try:
             locations = await self._client.locations(uri, token)
         except PlexError as exc:
@@ -1543,10 +1616,11 @@ class PlexService:
 
     async def _reach(self, token: str) -> str:
         """The address of the chosen server that answers (see the module docstring): the
-        stored address and plex.tv's list are asked at the same time; the stored one answering
-        is used at once (plex.tv's list still lands, behind); else the server's other
-        addresses race (with the stored one still in it), the first that answers wins and is
-        stored, the rest are cancelled."""
+        stored address and plex.tv's list (asked with the account's `token`) at the same time;
+        the stored one answering is used at once (plex.tv's list still lands, behind); else the
+        server's other addresses race (with the stored one still in it), the first that answers
+        wins and is stored, the rest are cancelled. The server is asked with its own token
+        (`server_token`, as plex.tv's list leaves it)."""
         current = self._settings.current
         stored, chosen = current.plex_server_uri, current.plex_server_id
         listing = asyncio.create_task(self._listing(token), name="plex-servers")
@@ -1554,7 +1628,9 @@ class PlexService:
         handed = False
         try:
             if stored and chosen:
-                tries[stored] = asyncio.create_task(self._answers(stored, chosen, token))
+                tries[stored] = asyncio.create_task(
+                    self._answers(stored, chosen, self._server_token())
+                )
                 await asyncio.wait({tries[stored], listing}, return_when=asyncio.FIRST_COMPLETED)
                 if tries[stored].done() and tries[stored].result():
                     self._finish_behind(listing, chosen)
@@ -1568,9 +1644,10 @@ class PlexService:
             candidates = [stored] if stored else []
             if server is not None:
                 candidates += [c.uri for c in connection_order(server) if c.uri != stored]
+            at_server = self._server_token()
             for uri in candidates:
                 if uri not in tries:
-                    tries[uri] = asyncio.create_task(self._answers(uri, chosen, token))
+                    tries[uri] = asyncio.create_task(self._answers(uri, chosen, at_server))
             pending = set(tries.values())
             while pending:
                 _done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
@@ -1592,36 +1669,55 @@ class PlexService:
             if not handed:
                 listing.cancel()
 
-    async def _listing(self, token: str) -> list[PlexServer] | None:
-        """plex.tv's list of the account's servers; None while plex.tv is away (the server's
-        own address may still answer). Raises PlexAuthError."""
+    async def _listing(self, token: str) -> list[tuple[PlexServer, SecretStr]] | None:
+        """plex.tv's list of the servers the account may use, with their own tokens; None
+        while plex.tv is away (the server's own address may still answer). Raises
+        PlexAuthError."""
         try:
-            return await self._client.servers(token)
+            return await self._client.resources(token)
         except PlexUnreachable:
             return None
 
     async def _take_listing(
-        self, servers: list[PlexServer] | None, chosen: str
+        self, listed: list[tuple[PlexServer, SecretStr]] | None, chosen: str
     ) -> PlexServer | None:
-        """The chosen server in plex.tv's list (the only one when none was chosen yet), its
-        name and id stored; None while plex.tv is away. Raises _NoServer."""
-        if servers is None:
+        """The chosen server in plex.tv's list, its name, id and own token stored (none chosen
+        yet: the account's own server when it has one, else the only other one); None while
+        plex.tv is away. Raises _NoServer."""
+        if listed is None:
             return None
+        servers = [server for server, _token in listed]
         self._servers = tuple(servers)
+        self._server_tokens = {
+            server.machine_id: token
+            for server, token in listed
+            if not server.owned and token.get_secret_value()
+        }
         if not chosen:
-            if not servers:
+            pool = [server for server in servers if server.owned] or servers
+            if not pool:
                 raise _NoServer(PlexProblem.NO_SERVER)
-            if len(servers) > 1:
+            if len(pool) > 1:
                 raise _NoServer(PlexProblem.CHOOSE_SERVER)
-            chosen = servers[0].machine_id
+            chosen = pool[0].machine_id
         server = next((s for s in servers if s.machine_id == chosen), None)
         if server is None:
             raise _NoServer(PlexProblem.NO_SERVER)
         current = self._settings.current
-        if (server.machine_id, server.name) != (current.plex_server_id, current.plex_server_name):
+        own = self._own_token(server)
+        if (server.machine_id, server.name, own) != (
+            current.plex_server_id,
+            current.plex_server_name,
+            current.plex_server_token.get_secret_value(),
+        ):
             await self._settings.update(
-                plex_server_id=server.machine_id, plex_server_name=server.name
+                plex_server_id=server.machine_id,
+                plex_server_name=server.name,
+                plex_server_token=own,
             )
+            if not server.owned:
+                log.info("Plex: a server that isn't the account's own (%s token)",
+                         "its own" if own else "the account's")
         return server
 
     def _stop_behind(self) -> None:
@@ -1634,7 +1730,9 @@ class PlexService:
             task.cancel()
         self._behind.clear()
 
-    def _finish_behind(self, listing: asyncio.Task[list[PlexServer] | None], chosen: str) -> None:
+    def _finish_behind(
+        self, listing: asyncio.Task[list[tuple[PlexServer, SecretStr]] | None], chosen: str
+    ) -> None:
         """The stored address answered first: plex.tv's list is taken in when it comes (the
         Settings box's servers, a renamed server), only while Plex is still connected to
         `chosen`; the account no longer having it sets `problem`, other failures change
@@ -1670,14 +1768,14 @@ class PlexService:
             self._clock() - self._unreachable_at < timedelta(seconds=FAIL_FAST_S)
         ):
             raise PlexUnreachable(f"Plex didn't answer a moment ago ({what})")
-        uri, token = self._settings.current.plex_server_uri, self._token()
+        uri = self._settings.current.plex_server_uri
         try:
-            return await call(uri, token)
+            return await call(uri, self._server_token())
         except PlexUnreachable:
             log.info("Plex %s: looking for the server again", what)
         try:
             async with asyncio.timeout(SCREEN_REACH_S):
-                found = await self._reach(token)
+                found = await self._reach(self._token())
         except PlexAuthError:
             raise
         except (PlexError, TimeoutError):  # away, or no server to be found
@@ -1687,7 +1785,7 @@ class PlexService:
         if found == uri:  # it answers, but not this in time: no second wait, nor for a while
             self._unreachable_at = self._clock()
             raise PlexUnreachable(f"Plex didn't answer in time ({what})")
-        return await call(found, token)
+        return await call(found, self._server_token())
 
     async def _answers(self, uri: str, machine_id: str, token: str) -> bool:
         try:

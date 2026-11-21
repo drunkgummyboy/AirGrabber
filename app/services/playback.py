@@ -1,18 +1,23 @@
 """▶ Play: a film or an episode from Plex opened in VLC on this PC (the info windows' "▶ Play").
 
-Plex runs on another machine (a NAS); this PC reaches the same files through MediaForge's Series
-and Movies folders, which are network shares (Forge's settings `series_folder` /
-`movies_folder`, read through the Forge runtime like app/services/download_status.py does: no SQL
-across the databases, Forge's types only under TYPE_CHECKING).
+Plex runs on this PC or on another machine (a NAS). This PC finds the file: as Plex names it when
+that is a Windows path that is there (Plex on this PC); else through the user's own folders of that
+kind (Settings → Folders' lists, the folder library's `series_folders` / `film_folders`, whatever
+its "Count what's in them" switch says: only whether a file is there is read); else through
+MediaForge's Series and Movies folders (Forge's settings `series_folder` / `movies_folder`, read
+through the Forge runtime like app/services/download_status.py does: no SQL across the databases,
+Forge's types only under TYPE_CHECKING). Those folders are often network shares.
 
 1. Plex says which file a title is (PlexService.film_video / show_videos): the server's path,
    such as /volume1/video/Movies/Dune (2021)/Dune (2021).mkv.
-2. `local_candidates` turns it into the paths Windows may see: the library folder (one of
-   PlexService.locations) that holds the file gives the part below it, joined onto the Series
-   folder (shows) or the Movies folder (films); then the part below the folder's own ending in
-   the file's path (`plex_folder`'s idea the other way round); then the file's last TAIL_PARTS
-   names under that folder. The first that exists is played; the checks run in a thread (a NAS can hang) with
-   FIND_TIMEOUT_S.
+2. `local_candidates` turns it into the paths Windows may see under each folder: the library
+   folder (one of PlexService.locations) that holds the file gives the part below it, joined onto
+   the folder; then the part below the folder's own ending in the file's path (`plex_folder`'s idea
+   the other way round); then the file's last TAIL_PARTS names under that folder. Each folder is
+   looked at in its own thread (a NAS can hang), all at once within FIND_TIMEOUT_S
+   (`_first_found`): the first folder in that order holding the file wins; one that doesn't
+   answer in time leaves the others theirs, and when none had it while one didn't answer, the
+   outcome says the folder didn't answer (TIMED_OUT), not that the file isn't there.
 3. `launch_video` starts VLC when it is installed (`find_vlc`: Program Files, Program Files
    (x86), then the PATH), else Windows' own player (`os.startfile`). The real starts are only
    `_start_process` / `_open_with_windows`, which tests/__init__.py refuses.
@@ -36,8 +41,8 @@ per video (`is_folder_video`, its key), never per title.
 
 What goes wrong comes back as a PlayOutcome whose `text` says so in plain words for the status
 bar: Plex didn't answer, MediaForge is off or its folder isn't set, the file isn't in that folder
-from this PC (or in the folder library's folders). Logs give ids and counts only: never a path,
-file name or title.
+from this PC (or in the folder library's folders), a folder didn't answer in time. Logs give ids
+and counts only: never a path, file name or title.
 """
 
 from __future__ import annotations
@@ -55,7 +60,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Literal
 
 from app.i18n import N_, t
-from app.models import FIRST_PROFILE_ID, Show
+from app.models import FIRST_PROFILE_ID, Settings, Show
 from app.models.plex import LibraryKind, PlexTitle, PlexVideo
 from app.services.folder_library.playing import (
     NOT_IN_FOLDERS_TEXT,
@@ -101,6 +106,7 @@ NOT_IN_MOVIES_TEXT = N_(
     "{name} isn't in your Movies folder from this PC: check the Movies folder in Settings › Folders."
 )
 NO_PLAYER_TEXT = N_("AirGrabber couldn't start a video player for {name}.")
+TIMED_OUT_TEXT = N_("The folder didn't answer in time. Try again.")
 
 
 class PlayProblem(StrEnum):
@@ -111,6 +117,7 @@ class PlayProblem(StrEnum):
     NO_FOLDER = "no_folder"  # its Series / Movies folder isn't set
     NOT_FOUND = "not_found"  # not in that folder from this PC
     NO_PLAYER = "no_player"  # starting the player failed
+    TIMED_OUT = "timed_out"  # a folder (a share asleep) didn't answer in time, none had it
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +159,8 @@ class PlayOutcome:
                 text = NOT_IN_SERIES_TEXT if shows else NOT_IN_MOVIES_TEXT
             case PlayProblem.NO_PLAYER:
                 text = NO_PLAYER_TEXT
+            case PlayProblem.TIMED_OUT:
+                return t(TIMED_OUT_TEXT)
         return t(text, name=self.name)
 
 
@@ -180,7 +189,19 @@ class LibraryFolders:
 
 
 FolderLookup = Callable[[], Awaitable[LibraryFolders | None]]
+OwnFolders = Callable[[LibraryKind], Sequence[str]]  # Settings → Folders' list of a kind
 Launcher = Callable[[str], Awaitable[Player]]
+
+
+def settings_folders(current: Callable[[], Settings]) -> OwnFolders:
+    """The user's own folders of a kind as Settings → Folders lists them (the folder library's
+    `series_folders` / `film_folders`), read when asked, whether they are counted or not."""
+
+    def of(kind: LibraryKind) -> Sequence[str]:
+        settings = current()
+        return settings.series_folders if kind == "show" else settings.film_folders
+
+    return of
 
 
 def forge_folders(runtime: ForgeRuntime) -> FolderLookup:
@@ -348,6 +369,22 @@ def _first_existing(paths: Sequence[str], exists: Callable[[str], bool]) -> int 
     return None
 
 
+def windows_file(path: str) -> bool:
+    """A file name Windows can open as it is: on a drive (D:\\Media\\…) or a network share
+    (\\\\server\\share\\…); not a POSIX path (a NAS's /volume1/…)."""
+    if not path.strip():
+        return False
+    windows = PureWindowsPath(path)
+    return bool(windows.drive) and windows.is_absolute()
+
+
+def _hit(task: asyncio.Future[int | None]) -> int | None:
+    """A finished look's index of the path found; None when it found none or failed."""
+    if not task.done() or task.cancelled() or task.exception() is not None:
+        return None
+    return task.result()
+
+
 # -- the service -----------------------------------------------------------------------------------
 
 
@@ -491,6 +528,7 @@ class PlaybackService:
         folder_library: FolderPlaying | None = None,
         person: Callable[[], int] | None = None,
         show_tmdb_id: Callable[[Show], Awaitable[int | None]] | None = None,
+        own_folders: OwnFolders | None = None,
         launch: Launcher = launch_video,
         exists: Callable[[str], bool] = os.path.isfile,
         timeout_s: float = FIND_TIMEOUT_S,
@@ -500,13 +538,17 @@ class PlaybackService:
         `folder_library`: the folder library's titles and files, at the place of `person` (the
         PC's selected person; the first without it). `show_tmdb_id`: a TVMaze show's TMDB id
         (DiscoveryService.show_tmdb_id), asked when neither of its titles names one: the
-        person's marks in the folders are joined by it. `launch` / `exists`: the seams tests
-        replace (never a real player); `clock`: how old a kept episode list is."""
+        person's marks in the folders are joined by it. `own_folders`: Settings → Folders'
+        folders of a kind (`settings_folders`), where a Plex file is looked for before
+        MediaForge's. `launch` / `exists`: the seams tests replace (never a real player);
+        `clock`: how old a kept episode list is. `timeout_s`: how long all of one video's
+        folders together may take to answer."""
         self._plex = plex
         self._folders = folders
         self._library = folder_library
         self._person = person or (lambda: FIRST_PROFILE_ID)
         self._show_tmdb_id = show_tmdb_id
+        self._own_folders: OwnFolders = own_folders or (lambda _kind: ())
         self._launch = launch
         self._exists = exists
         self._timeout_s = timeout_s
@@ -748,58 +790,113 @@ class PlaybackService:
     async def _locate_plex(
         self, name: str, kind: LibraryKind, video: PlexVideo
     ) -> Located | PlayOutcome:
-        """A Plex video's file from this PC, through MediaForge's Series / Movies folder."""
+        """A Plex video's file from this PC: Plex's own file name when it is a Windows path
+        (Plex on this PC), then each of the user's own folders of the kind (Settings →
+        Folders), then MediaForge's Series / Movies folder; all looked at together within the
+        time limit (`_first_found`)."""
         if not self._plex.connected:
             return PlayOutcome(name, kind, problem=PlayProblem.NOT_CONNECTED)
-        folders = await self._folders()
-        if folders is None:
+        own = [folder for folder in self._own_folders(kind) if folder.strip()]
+        forge = await self._folders()
+        forge_folder = forge.of(kind).strip() if forge is not None else ""
+        folders = list(own)
+        if forge_folder and forge_folder.casefold() not in {one.casefold() for one in own}:
+            folders.append(forge_folder)
+        groups: list[list[str]] = [[video.file]] if windows_file(video.file) else []
+        if folders:
+            locations = await self._locations()
+            groups += [local_candidates(video.file, locations, folder) for folder in folders]
+        found, timed_out = await self._first_found(groups)
+        if found is not None:
+            group, index = found
+            log.info(
+                "Play: %s %s found (folder %d of %d, place %d)",
+                kind, logged_key(video.key), group + 1, len(groups), index + 1,
+            )
+            return Located(name, kind, groups[group][index])
+        log.info(
+            "Play: %s %s not found from this PC (%d folder(s), %d places tried%s)",
+            kind, logged_key(video.key), len(groups), sum(len(one) for one in groups),
+            ", one didn't answer in time" if timed_out else "",
+        )
+        if timed_out:
+            return PlayOutcome(name, kind, problem=PlayProblem.TIMED_OUT)
+        if not own and forge is None:
             return PlayOutcome(name, kind, problem=PlayProblem.FORGE_OFF)
-        folder = folders.of(kind)
-        if not folder.strip():
+        if not own and not forge_folder:
             return PlayOutcome(name, kind, problem=PlayProblem.NO_FOLDER)
+        return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND)
+
+    async def _locations(self) -> list[str]:
+        """The Plex libraries' folders as the server sees them; none when they don't read (the
+        file's last names may still find it)."""
         try:
-            locations = [path for _key, path in await self._plex.locations()]
+            return [path for _key, path in await self._plex.locations()]
         except PlexUnreachable:
-            locations = []  # the file's last names may still find it
+            return []
         except PlexError as exc:
             log.info("Play: the libraries' folders didn't read (%s)", type(exc).__name__)
-            locations = []
-        candidates = local_candidates(video.file, locations, folder)
+            return []
+
+    async def _first_found(
+        self, groups: Sequence[Sequence[str]]
+    ) -> tuple[tuple[int, int] | None, bool]:
+        """The first group (a folder's places, in order) holding a file that is there, and
+        that one's index in it; and whether a group didn't answer in time. Each group is looked
+        at in its own thread, all at once (a share asleep holds only its own), within
+        `timeout_s` for them all: a group wins once every group before it has answered without
+        one; at the time limit, the first that found one of those that answered."""
+        groups = [group for group in groups if group]
+        if not groups:
+            return None, False
+        loop = asyncio.get_running_loop()
+        looks = [
+            asyncio.ensure_future(asyncio.to_thread(_first_existing, list(group), self._exists))
+            for group in groups
+        ]
+        deadline = loop.time() + self._timeout_s
         try:
-            async with asyncio.timeout(self._timeout_s):
-                index = await asyncio.to_thread(_first_existing, candidates, self._exists)
-        except TimeoutError:
-            log.info("Play: the %s folder didn't answer in time", kind)
-            index = None
-        if index is None:
-            log.info(
-                "Play: %s %s not found from this PC (%d places tried)",
-                kind, logged_key(video.key), len(candidates),
-            )
-            return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND)
-        log.info("Play: %s %s found (place %d)", kind, logged_key(video.key), index + 1)
-        return Located(name, kind, candidates[index])
+            while True:
+                for number, look in enumerate(looks):
+                    if not look.done():
+                        break  # an earlier folder may still have it
+                    index = _hit(look)
+                    if index is not None:
+                        return (number, index), False
+                else:
+                    return None, False  # every folder answered: none has it
+                left = deadline - loop.time()
+                if left <= 0:
+                    break
+                pending = [look for look in looks if not look.done()]
+                await asyncio.wait(pending, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+            for number, look in enumerate(looks):
+                index = _hit(look)
+                if index is not None:
+                    return (number, index), True
+            return None, True
+        finally:
+            for look in looks:
+                look.cancel()  # a thread still looking runs on; its answer is dropped
 
     async def _locate_copy(
         self, name: str, kind: LibraryKind, video: PlexVideo
     ) -> Located | PlayOutcome:
         """A folder library video's file: the best of its copies still there from this PC (the
-        paths as they are), looked at in a thread within the time limit."""
+        paths as they are), each looked at in its own thread within the time limit
+        (`_first_found`); none there while one didn't answer is TIMED_OUT."""
         library = self._folder_library()
         paths = await library.copies(video) if library is not None else []
-        index: int | None = None
-        if paths:
-            try:
-                async with asyncio.timeout(self._timeout_s):
-                    index = await asyncio.to_thread(_first_existing, paths, self._exists)
-            except TimeoutError:
-                log.info("Play: the folder library's %s didn't answer in time", kind)
+        found, timed_out = await self._first_found([[path] for path in paths])
+        index = found[0] if found is not None else None
         if index is None:
             log.info(
-                "Play: %s %s not found in the folders (%d copies tried)",
+                "Play: %s %s not found in the folders (%d copies tried%s)",
                 kind, logged_key(video.key), len(paths),
+                ", one didn't answer in time" if timed_out else "",
             )
-            return PlayOutcome(name, kind, problem=PlayProblem.NOT_FOUND, folders=True)
+            problem = PlayProblem.TIMED_OUT if timed_out else PlayProblem.NOT_FOUND
+            return PlayOutcome(name, kind, problem=problem, folders=True)
         log.info(
             "Play: %s %s found in the folders (copy %d)", kind, logged_key(video.key), index + 1
         )

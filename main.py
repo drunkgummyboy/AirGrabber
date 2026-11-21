@@ -22,6 +22,9 @@ plays it and leaves once the player closes, unless it stays in the tray (D5's ru
 turns it on for a new install; app/forge/context_menu.py, which leaves another program's menu
 alone) and exits: no window, no single-instance lock; the exit code says how it went (`EXIT_*`
 there).
+`--fetch-tools` only fetches the video tools (ffmpeg, ffprobe, yt-dlp; app/services/media_tools.py)
+unless they are there, and exits: install.ps1 runs it once the packages are in. No window, no lock;
+exit code 0 when they are there now, 1 when not (the app tries again after its start).
 """
 
 from __future__ import annotations
@@ -66,6 +69,7 @@ class Options:
     paths: tuple[str, ...] = ()  # files and folders, as given
     forge_menu: str | None = None  # "on" / "off": only change the right-click menu, then exit
     play: str | None = None  # a video to play in AirGrabber's player (Explorer's "Open with")
+    fetch_tools: bool = False  # only fetch the video tools (install.ps1), then exit
 
     @property
     def forge_request(self) -> ForgeRequest | None:
@@ -99,6 +103,7 @@ def parse_options(argv: Sequence[str]) -> Options:
     parser.add_argument("--preset")
     parser.add_argument("--forge-menu", nargs="?", const="")  # alone: "" (not on / off)
     parser.add_argument("--play", nargs="?", const="")  # alone: nothing to play
+    parser.add_argument("--fetch-tools", action="store_true")
     parser.add_argument("paths", nargs="*")
     namespace, _unknown = parser.parse_known_intermixed_args(_joined_preset(argv))
     preset = namespace.preset
@@ -111,6 +116,7 @@ def parse_options(argv: Sequence[str]) -> Options:
         paths=tuple(str(path) for path in namespace.paths),
         forge_menu=namespace.forge_menu,
         play=namespace.play or None,
+        fetch_tools=bool(namespace.fetch_tools),
     )
 
 
@@ -133,7 +139,9 @@ def main() -> int:
     options = parse_options(sys.argv[1:])
     paths = AppPaths.default()
     instance: InstanceLock | None = None
-    only_setup = options.setup_qbittorrent or options.forge_menu is not None
+    only_setup = (
+        options.setup_qbittorrent or options.forge_menu is not None or options.fetch_tools
+    )
     request = None if only_setup else options.request
     if request is not None:
         # Before logging and the package check: Explorer starts one process per selected file.
@@ -152,6 +160,9 @@ def main() -> int:
     if options.forge_menu is not None:
         # Not the app either: no lock (AirGrabber may be running) and no window.
         return _forge_menu(paths, options.forge_menu)
+    if options.fetch_tools:
+        # Not the app either: no lock (AirGrabber may be running) and no window.
+        return _fetch_tools(paths)
     log.info("=== AirGrabber starting (data: %s) ===", paths.root)
     if store_python():
         log.warning(
@@ -334,6 +345,21 @@ def _forge_menu(paths: AppPaths, action: str) -> int:
         return asyncio.run(menu_action(paths, action))
     except Exception:
         log.exception("Changing the right-click menu failed")
+        return 1
+
+
+def _fetch_tools(paths: AppPaths) -> int:
+    """`--fetch-tools` (install.ps1): fetch the video tools unless they are there
+    (app/services/media_tools.py). Never raises; 0 when they are there now, else 1."""
+    log.info("=== AirGrabber: fetching the video tools ===")
+    try:
+        if not ensure_requirements(paths):
+            return 1
+        from app.services.media_tools import fetch_once
+
+        return asyncio.run(fetch_once(paths))
+    except Exception as exc:  # the type only: a message could hold a path or an address
+        log.error("Fetching the video tools failed (%s)", type(exc).__name__)
         return 1
 
 

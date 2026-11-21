@@ -1,10 +1,10 @@
 """Phone-sized copies (the owner, 2026-11-09; contract: the Companion's
 docs/2026-11-09-phone-sized-copies.md).
 
-A film Plex has only in 4K takes ~18 GB on a phone. The NAS can't shrink it in time, but this PC's
-graphics card can (NVENC): the phone asks for a copy (`POST /v1/phone-copies`), AirGrabber fetches the
-film's tallest version from Plex over the home network and converts it to a ~5 GB 1080p HEVC copy,
-which the phone then copies from here (`GET /v1/phone-copies/<key>/file`, resumable) and drops
+A film Plex has only in 4K takes ~18 GB on a phone. The NAS can't shrink it in time, but this PC
+can (its graphics card, else its processor): the phone asks for a copy (`POST /v1/phone-copies`),
+AirGrabber fetches the film's tallest version from Plex over the home network and converts it to a
+~5 GB 1080p HEVC copy, which the phone then copies from here (`GET /v1/phone-copies/<key>/file`, resumable) and drops
 (`DELETE`). Send to phone's Phone-sized tick (sends.py) starts one from the PC (`make`), so it is
 ready by the time the phone comes home; cancelling that order drops it (`drop`). One job at a time; the files live in AirGrabber's local data folder (`phone-copies`),
 never on a synced drive. A copy nobody touched for STALE_DAYS goes.
@@ -15,16 +15,25 @@ converted straight from the PC's own file that is there now (`local_source`, a s
 thread under a time limit), its progress starting at FETCH_SHARE. A copy's file is its key with
 `:` as `-` ("movie-603.mkv").
 
-The recipe: CUDA decoding, `scale_cuda` to fit 1920 × 1080 (a 10-bit picture stays 10-bit, its
-colour tags (HDR10) are kept), `hevc_nvenc` at ~6 Mbit/s (10 at the peaks); sound copied when it's
-AAC / AC-3 / E-AC-3 (and other kinds a phone plays), TrueHD / DTS / FLAC / PCM to E-AC-3 640k;
-subtitles and fonts copied; Matroska out. Should the card refuse to decode the picture, the same
-again with the processor decoding. A film in Dolby Vision only (no HDR10 picture under it) fails
-with a plain sentence rather than wrong colours.
+The encoder: the first of ENCODERS that makes a tiny real picture (`_probe`, once at the start and
+once more when the video tools arrive later): NVIDIA's NVENC, Intel's Quick Sync, AMD's AMF, else
+the processor (libx265, `-preset fast`: slower, often about the film's length or more, but it needs
+only ffmpeg). Each is also tried at 10 bits; a 10-bit film goes to the first that does them (the
+processor always does), so HDR10 stays HDR10.
 
-ffmpeg and ffprobe are MediaForge's trailer tools (`AppPaths.forge / "tools" / "ffmpeg" / "bin"`):
-without them, or without a card that encodes (`probe`, once), `available` is False and
-`GET /v1/hello` says so (`phone_copies`). Logs give Plex's keys, sizes and durations (a folder
+The recipe, the same for each but the encoder: fit 1920 × 1080 (a 10-bit picture stays 10-bit, its
+colour tags (HDR10) are kept), HEVC at ~6 Mbit/s (10 at the peaks, ~5 GB for a 2 h film); sound
+copied when it's AAC / AC-3 / E-AC-3 (and other kinds a phone plays), TrueHD / DTS / FLAC / PCM to
+E-AC-3 640k; subtitles and fonts copied; Matroska out. NVIDIA's decodes and scales on the card
+(CUDA, `scale_cuda`); should it refuse the picture, the same again with the processor decoding.
+The others decode and scale (`scale`) on the processor. A card that fails a film falls back to
+the processor's encoder once. A film in Dolby Vision only (no HDR10 picture under it) fails with a
+plain sentence rather than wrong colours.
+
+ffmpeg and ffprobe come with AirGrabber (app/services/media_tools.py, `AppPaths.forge / "tools" /
+"ffmpeg" / "bin"`): without them, or when nothing encodes, `available` is False and
+`GET /v1/hello` says so (`phone_copies`); while they're missing the phone hears they're on their
+way (`missing_text`). Logs give Plex's keys, sizes and durations (a folder
 film's key only as its kind, `_logged`: its TMDB id would name it): never a title, a path, an
 address or ffmpeg's own words (they hold paths).
 """
@@ -49,6 +58,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from app.i18n import N_, t
 from app.models.plex import PlexFilmFile
 from app.services.folder_library.playing import canonical_item, parse_item
+from app.services.media_tools import TOOLS_COMING_TEXT
 from app.services.phone.server import (
     FileReply,
     Reply,
@@ -66,6 +76,10 @@ log = logging.getLogger(__name__)
 
 FOLDER = "phone-copies"  # in the data folder
 STALE_DAYS = 3
+Encoder = Literal["nvenc", "qsv", "amf", "x265"]
+ENCODERS: tuple[Encoder, ...] = ("nvenc", "qsv", "amf", "x265")  # tried in this order
+PROCESSOR: Encoder = "x265"
+X265_PRESET = "fast"
 CLEAN_EVERY_S = 3600.0
 FETCH_SHARE = 25  # of the job's 100: fetching from Plex; converting is the rest
 MAX_WIDTH, MAX_HEIGHT = 1920, 1080
@@ -81,6 +95,13 @@ _PHONE_KEY = re.compile(r"[A-Za-z0-9:]{1,40}")
 _PLEX_FILM_KEY = re.compile(r"[0-9]{1,12}")  # a Plex ratingKey
 _KEPT_SOUND = frozenset({"aac", "ac3", "eac3", "mp3", "opus", "vorbis", "mp2"})
 _TEXT_SUBTITLES_TO_SRT = frozenset({"mov_text"})  # MP4's text: Matroska takes it as SRT
+# The picture each encoder takes from the processor: (8-bit, 10-bit).
+_PIXELS: dict[Encoder, tuple[str, str]] = {
+    "nvenc": ("yuv420p", "p010le"),
+    "qsv": ("nv12", "p010le"),
+    "amf": ("nv12", "p010le"),
+    "x265": ("yuv420p", "yuv420p10le"),
+}
 
 State = Literal["waiting", "fetching", "converting", "ready", "failed"]
 
@@ -188,28 +209,53 @@ def converted_sound(codec: str) -> bool:
     return codec not in _KEPT_SOUND
 
 
+def encoder_args(encoder: Encoder, ten_bit: bool) -> list[str]:
+    """The picture's encoder and its settings (~6 Mbit/s, 10 at the peaks)."""
+    rate = ["-b:v", VIDEO_RATE, "-maxrate", VIDEO_PEAK, "-bufsize", VIDEO_BUFFER]
+    profile = ["-profile:v", "main10" if ten_bit else "main"]
+    if encoder == "nvenc":
+        return ["-c:v", "hevc_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", *rate, *profile]
+    if encoder == "qsv":  # a peak above the rate: Quick Sync's VBR
+        return ["-c:v", "hevc_qsv", "-preset", "slow", *rate, *profile]
+    if encoder == "amf":
+        return [
+            "-c:v", "hevc_amf", "-usage", "transcoding", "-quality", "quality",
+            "-rc", "vbr_peak", *rate, *profile,
+        ]  # fmt: skip
+    return [
+        "-c:v", "libx265", "-preset", X265_PRESET, *rate, *profile,
+        "-x265-params", "log-level=error",
+    ]  # fmt: skip
+
+
 def ffmpeg_args(
-    ffmpeg: Path, source: Path, target: Path, info: SourceInfo, *, card_decodes: bool = True
+    ffmpeg: Path,
+    source: Path,
+    target: Path,
+    info: SourceInfo,
+    *,
+    card_decodes: bool = True,
+    encoder: Encoder = "nvenc",
+    ten_bit: bool | None = None,
 ) -> list[str]:
     """The conversion (see the module docstring). `card_decodes` False: the processor decodes,
-    the card still encodes."""
+    the card still encodes (only NVIDIA's decodes on the card; the others always on the
+    processor). `ten_bit`: the copy's bits (None: the film's own)."""
+    ten = info.ten_bit if ten_bit is None else ten_bit
+    on_card = card_decodes and encoder == "nvenc" and ten == info.ten_bit
     width, height = fit(info.width, info.height)
     args = [str(ffmpeg), "-hide_banner", "-nostdin", "-y", "-nostats", "-progress", "pipe:1"]
-    if card_decodes:
+    if on_card:
         args += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
     args += ["-i", str(source)]
     args += ["-map", "0:v:0", "-map", "0:a?", "-map", "0:s?", "-map", "0:t?"]
     args += ["-map_metadata", "0", "-map_chapters", "0"]
-    if card_decodes:
+    if on_card:
         args += ["-vf", f"scale_cuda=w={width}:h={height}"]
     else:
-        pixels = "p010le" if info.ten_bit else "yuv420p"
+        pixels = _PIXELS[encoder][1 if ten else 0]
         args += ["-vf", f"scale=w={width}:h={height}:flags=lanczos,format={pixels}"]
-    args += [
-        "-c:v", "hevc_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr",
-        "-b:v", VIDEO_RATE, "-maxrate", VIDEO_PEAK, "-bufsize", VIDEO_BUFFER,
-        "-profile:v", "main10" if info.ten_bit else "main",
-    ]  # fmt: skip
+    args += encoder_args(encoder, ten)
     for option, value in (
         ("-color_primaries", info.primaries),
         ("-color_trc", info.transfer),
@@ -372,10 +418,13 @@ class PhoneCopies:
         clock: Callable[[], float] = time.time,
         free_space: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free,
         local_source: LocalSource | None = None,
+        missing_text: Callable[[], str] | None = None,
     ) -> None:
         """`folder`: where the copies go (local data). `tools`: ffmpeg's bin folder.
         `local_source(key)`: the PC's own file of a folder library film (a video key) that is
-        there now, None when there is none (None: no folder library). The rest: for tests."""
+        there now, None when there is none (None: no folder library). `missing_text()`: what
+        the phone hears while the video tools aren't there (`MediaTools.missing_text`). The
+        rest: for tests."""
         self._plex = plex
         self._folder = folder
         self._ffmpeg = tools / "ffmpeg.exe"
@@ -389,13 +438,23 @@ class PhoneCopies:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._current: tuple[str, asyncio.Task[None]] | None = None
         self._worker: asyncio.Task[None] | None = None
-        self._card: bool | None = None  # NVENC works (None: not tried yet)
+        self._encoder: Encoder | None = None  # the first that works (None: none, or not tried)
+        self._ten_bit_encoder: Encoder | None = None  # the first that does 10 bits
+        self._missing_text = missing_text
         self._started = False
 
     @property
     def available(self) -> bool:
-        """ffmpeg is there and the card encodes (`start` tried it)."""
-        return bool(self._card) and self._ffmpeg.is_file() and self._ffprobe.is_file()
+        """ffmpeg is there and something encodes (`start` tried it)."""
+        return self._encoder is not None and self._tools_there()
+
+    @property
+    def encoder(self) -> Encoder | None:
+        """The encoder the copies use (None: none works, or not tried yet)."""
+        return self._encoder
+
+    def _tools_there(self) -> bool:
+        return self._ffmpeg.is_file() and self._ffprobe.is_file()
 
     def routes(self) -> dict[tuple[str, str], Route]:
         return {
@@ -416,11 +475,11 @@ class PhoneCopies:
         try:
             await asyncio.to_thread(self._folder.mkdir, parents=True, exist_ok=True)
             await self._pick_up()
-            self._card = await self._probe()
+            await self._probe()
         except Exception as exc:
             log.warning("Phone-sized copies can't start (%s)", type(exc).__name__)
-            self._card = False
-        log.info("Phone-sized copies: %s", "possible" if self.available else "not possible here")
+            self._encoder = self._ten_bit_encoder = None
+        self._say_what_works()
         self._worker = asyncio.create_task(self._work(), name="phone-copies")
 
     async def aclose(self) -> None:
@@ -432,14 +491,51 @@ class PhoneCopies:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _probe(self) -> bool:
-        """Whether the card encodes: a tiny black picture through hevc_nvenc."""
-        if not self._ffmpeg.is_file() or not self._ffprobe.is_file():
+    async def tools_arrived(self) -> bool:
+        """The video tools came after the start (app/services/media_tools.py): the encoders
+        tried now. True when copies became possible."""
+        if not self._started or self.available:
             return False
+        try:
+            await self._probe()
+        except Exception as exc:
+            log.warning("Phone-sized copies: trying the encoders failed (%s)", type(exc).__name__)
+            return False
+        self._say_what_works()
+        return self.available
+
+    def _say_what_works(self) -> None:
+        if self.available:
+            log.info(
+                "Phone-sized copies: possible (%s; 10-bit: %s)",
+                self._encoder,
+                self._ten_bit_encoder or "none",
+            )
+        else:
+            log.info("Phone-sized copies: not possible here")
+
+    async def _probe(self) -> None:
+        """The first of ENCODERS that makes a tiny black picture, and the first from it on that
+        makes one at 10 bits."""
+        self._encoder = self._ten_bit_encoder = None
+        if not self._tools_there():
+            return
+        for encoder in ENCODERS:
+            if self._encoder is None:
+                if not await self._encodes(encoder, ten_bit=False):
+                    continue
+                self._encoder = encoder
+            if await self._encodes(encoder, ten_bit=True):
+                self._ten_bit_encoder = encoder
+                return
+
+    async def _encodes(self, encoder: Encoder, *, ten_bit: bool) -> bool:
+        pixels = _PIXELS[encoder][1 if ten_bit else 0]
         code, _ = await self._run(
             [
                 str(self._ffmpeg), "-hide_banner", "-nostdin", "-f", "lavfi",
-                "-i", "color=c=black:s=256x144:d=0.2", "-c:v", "hevc_nvenc", "-f", "null", "-",
+                "-i", "color=c=black:s=256x144:d=0.2", "-vf", f"format={pixels}",
+                *encoder_args(encoder, ten_bit), "-f", "null", "-",
             ],
             PROBE_TIMEOUT_S,
         )  # fmt: skip
@@ -506,6 +602,10 @@ class PhoneCopies:
             return bad_request()
         job = self._want(key)
         if job is None:
+            if not self._tools_there():  # on their way (or tried again later)
+                missing = self._missing_text
+                text = missing() if missing is not None else t(TOOLS_COMING_TEXT)
+                return error_reply(409, "failed", text)
             return error_reply(409, "failed", t(NOT_POSSIBLE_TEXT))
         return Reply(200, job.answer())
 
@@ -664,30 +764,44 @@ class PhoneCopies:
         await self._converted(job, source, info, info.duration_s)
         await self._ready(job)
 
+    def _attempts(self, source: Path, part: Path, info: SourceInfo) -> list[list[str]]:
+        """The conversions to try in turn: NVIDIA's with the card decoding, then with the
+        processor decoding; a card's encoder, then the processor's."""
+        encoder = (self._ten_bit_encoder if info.ten_bit else None) or self._encoder or PROCESSOR
+        ten_bit = info.ten_bit and self._ten_bit_encoder is not None
+        attempts = [ffmpeg_args(self._ffmpeg, source, part, info, encoder=encoder, ten_bit=ten_bit)]
+        if encoder == "nvenc" and ten_bit == info.ten_bit:
+            attempts.append(
+                ffmpeg_args(
+                    self._ffmpeg, source, part, info, encoder=encoder, ten_bit=ten_bit,
+                    card_decodes=False,
+                )
+            )  # fmt: skip
+        if encoder != PROCESSOR:
+            attempts.append(ffmpeg_args(self._ffmpeg, source, part, info, encoder=PROCESSOR))
+        return attempts
+
     async def _converted(self, job: _Job, source: Path, info: SourceInfo, duration: float) -> None:
-        """`source` converted into the job's copy, not ready yet (the card decoding, else the
-        processor)."""
+        """`source` converted into the job's copy, not ready yet (`_attempts` in turn)."""
         job.state, job.progress = "converting", FETCH_SHARE
         part = self._folder / f"{_stem(job.key)}.mkv.part"
 
         def converted(share: float) -> None:
             job.progress = FETCH_SHARE + round(share * (100 - FETCH_SHARE))
 
-        code = await self._convert(
-            ffmpeg_args(self._ffmpeg, source, part, info), duration, converted
-        )
-        if code != 0:  # the card wouldn't decode it: the processor decodes, the card encodes
-            log.info(
-                "Phone-sized copy %s: decoding on the card failed (%d); again",
-                _logged(job.key),
-                code,
-            )
-            job.progress = FETCH_SHARE
-            code = await self._convert(
-                ffmpeg_args(self._ffmpeg, source, part, info, card_decodes=False),
-                duration,
-                converted,
-            )
+        code = 0
+        for tried, args in enumerate(self._attempts(source, part, info)):
+            if tried:
+                log.info(
+                    "Phone-sized copy %s: conversion %d failed (%d); again another way",
+                    _logged(job.key),
+                    tried,
+                    code,
+                )
+                job.progress = FETCH_SHARE
+            code = await self._convert(args, duration, converted)
+            if code == 0:
+                break
         if code != 0:
             log.warning("Phone-sized copy %s: ffmpeg ended with %d", _logged(job.key), code)
             raise _Failed(t(CONVERT_FAILED_TEXT))
