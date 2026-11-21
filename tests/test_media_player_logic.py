@@ -317,5 +317,88 @@ class SyncAndSpeedTests(unittest.TestCase):
         self.assertIsNone(fill_aspect(0, 768))
 
 
+class RoundFourTests(unittest.TestCase):
+    """Round 4 (owner, 2026-11-21): Ends at, Skip credits, the sound output gone."""
+
+    def test_ends_at(self) -> None:
+        from app.media_player_logic import ends_at
+
+        self.assertIsNone(ends_at(1_000.0, 0, 0, 1.0))
+        self.assertEqual(ends_at(1_000.0, 60_000, 660_000, 1.0), 1_600.0)
+        self.assertEqual(ends_at(1_000.0, 60_000, 660_000, 2.0), 1_300.0)  # at 2×
+        self.assertEqual(ends_at(1_000.0, 700_000, 660_000, 1.0), 1_000.0)
+
+    def test_credits_button(self) -> None:
+        from app.media_player_logic import credits_button
+
+        self.assertTrue(credits_button(5_000_000, 6_000_000, 5_000_000, False))
+        self.assertFalse(credits_button(4_999_000, 6_000_000, 5_000_000, False))  # before
+        self.assertFalse(credits_button(5_000_000, 6_000_000, 5_000_000, True))  # the countdown
+        self.assertFalse(credits_button(5_000_000, 6_000_000, None, False))  # no marker
+        self.assertFalse(credits_button(5_999_000, 6_000_000, 5_000_000, False))  # the last 2 s
+
+    def test_device_gone(self) -> None:
+        from app.media_player_logic import device_gone
+
+        self.assertTrue(device_gone("headphones", "speakers", False))
+        self.assertFalse(device_gone("speakers", "headphones", True))  # plugged in / picked
+        self.assertFalse(device_gone(None, "speakers", False))  # the first look
+        self.assertFalse(device_gone("speakers", "speakers", False))
+
+
+class RoundThreeTests(unittest.TestCase):
+    """Round 3 (owner, 2026-11-21): the sleep timer's steps and fade, the chapters' jumps."""
+
+    CHAPTERS = [(0, "Opening"), (600_000, ""), (1_200_000, "Finale")]
+
+    def test_t_steps_round(self) -> None:
+        from app.media_player_logic import SLEEP_END, next_sleep
+
+        self.assertEqual(next_sleep(0), 15)
+        self.assertEqual(next_sleep(90), SLEEP_END)
+        self.assertEqual(next_sleep(SLEEP_END), 0)
+        self.assertEqual(next_sleep(7), 0)  # not a step: off
+
+    def test_the_fade(self) -> None:
+        from app.media_player_logic import SLEEP_FADE_S, faded_volume
+
+        self.assertEqual(faded_volume(80, SLEEP_FADE_S + 1), 80)
+        self.assertEqual(faded_volume(80, SLEEP_FADE_S / 2), 40)
+        self.assertEqual(faded_volume(80, -3), 0)
+
+    def test_chapter_index(self) -> None:
+        from app.media_player_logic import chapter_index
+
+        self.assertIsNone(chapter_index([], 5))
+        self.assertIsNone(chapter_index([(10_000, "")], 5))
+        self.assertEqual(chapter_index(self.CHAPTERS, 600_000), 1)
+        self.assertEqual(chapter_index(self.CHAPTERS, 5_000_000), 2)
+
+    def test_chapter_steps(self) -> None:
+        from app.media_player_logic import chapter_step
+
+        chapters = self.CHAPTERS
+        self.assertEqual(chapter_step(chapters, 700_000, 1), 1_200_000)
+        self.assertIsNone(chapter_step(chapters, 1_300_000, 1))  # the last: none after it
+        self.assertEqual(chapter_step(chapters, 700_000, -1), 600_000)  # well into it: its start
+        self.assertEqual(chapter_step(chapters, 601_000, -1), 0)  # just into it: the one before
+        self.assertEqual(chapter_step(chapters, 1_000, -1), 0)  # the first: its start
+        self.assertIsNone(chapter_step([], 1_000, 1))
+        self.assertEqual(chapter_step([(5_000, "")], 1_000, 1), 5_000)  # before the first
+
+    def test_the_new_keys(self) -> None:
+        for keysym, action in (
+            ("d", "voices"),
+            ("D", "voices"),
+            ("l", "brighter"),
+            ("t", "sleep"),
+            ("Next", "next_chapter"),
+            ("Prior", "previous_chapter"),
+            ("question", "shortcuts"),
+            ("F1", "shortcuts"),
+        ):
+            self.assertEqual(KEYS[keysym], action)
+
+
 if __name__ == "__main__":
     unittest.main()

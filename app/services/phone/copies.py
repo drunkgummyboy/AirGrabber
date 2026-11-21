@@ -693,15 +693,15 @@ class PhoneCopies:
         try:
             await self._fetch_and_convert(job)
         except _Failed as failed:
+            await asyncio.to_thread(self._remove_files, job.key)  # gone before it says failed
             job.state, job.message = "failed", failed.message
-            await asyncio.to_thread(self._remove_files, job.key)
             return
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.error("Phone-sized copy %s failed: %s", _logged(job.key), type(exc).__name__)
-            job.state, job.message = "failed", t(CONVERT_FAILED_TEXT)
             await asyncio.to_thread(self._remove_files, job.key)
+            job.state, job.message = "failed", t(CONVERT_FAILED_TEXT)
             return
         log.info(
             "Phone-sized copy %s ready: %.1f GB in %.0f min",

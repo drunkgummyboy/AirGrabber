@@ -53,6 +53,21 @@ def multi_info(name: str = "Some.Show.S01") -> dict[str, Any]:
     }
 
 
+ROOT = b"\x07" * 32  # a file's v2 "pieces root"
+
+
+def hybrid_info(length: int = 65536) -> dict[str, Any]:
+    """A hybrid (v1 + v2) single-file info dictionary of `length` bytes in 16 KiB pieces."""
+    return {
+        "file tree": {"x.mkv": {"": {"length": length, "pieces root": ROOT}}},
+        "length": length,
+        "meta version": 2,
+        "name": "x.mkv",
+        "piece length": 16384,
+        "pieces": b"\x01" * (20 * max(1, -(-length // 16384))),
+    }
+
+
 def make_torrent(
     info: dict[str, Any] | None = None, announce: str = "udp://tracker.example.org:1337"
 ) -> bytes:
@@ -78,6 +93,15 @@ class AcceptedTests(unittest.TestCase):
     def test_hybrid_torrent(self) -> None:
         info = single_info(**{"meta version": 2, "file tree": {"x": {"": {"length": 1}}}})
         self.assertIsNone(torrent_problem(make_torrent(info), info_hash_of(info)))
+
+    def test_hybrid_torrent_with_its_piece_layers(self) -> None:
+        info = hybrid_info()
+        data = bencode({"info": info, "piece layers": {ROOT: b"\x05" * 64}})
+        self.assertIsNone(torrent_problem(data, info_hash_of(info)))
+
+    def test_hybrid_torrent_whose_files_fit_in_one_piece_needs_no_layers(self) -> None:
+        info = hybrid_info(length=16384)  # one piece: BEP 52 leaves it out of piece layers
+        self.assertIsNone(torrent_problem(bencode({"info": info}), info_hash_of(info)))
 
     def test_hash_is_of_the_exact_info_bytes(self) -> None:
         # Unsorted keys: re-encoding a decoded dict sorted would give another hash.
@@ -137,6 +161,37 @@ class RefusedTests(unittest.TestCase):
             "piece length": 16384,
         }
         self.assert_refused(make_torrent(info), "a v2-only torrent")
+
+    def test_hybrid_torrent_without_its_piece_layers(self) -> None:
+        # What itorrents.org serves for a hybrid torrent: the info dictionary only, so
+        # Download Station calls it an "invalid torrent file" (2026-11-21).
+        info = hybrid_info()
+        reason = "a hybrid torrent without its piece layers"
+        self.assert_refused(make_torrent(info), reason, info_hash_of(info))
+        for layers in ({}, {b"\x08" * 32: b"\x05" * 64}, b"not a dictionary"):
+            with self.subTest(layers=layers):
+                data = bencode({"info": info, "piece layers": layers})
+                self.assert_refused(data, reason, info_hash_of(info))
+
+    def test_hybrid_multi_file_torrent_without_its_piece_layers(self) -> None:
+        info = hybrid_info()
+        info["file tree"] = {
+            "Show": {
+                "E01.mkv": {"": {"length": 65536, "pieces root": ROOT}},
+                "E01.srt": {"": {"length": 100}},  # within one piece: no root needed
+            }
+        }
+        del info["length"]
+        info["files"] = [
+            {"length": 65536, "path": ["Show", "E01.mkv"]},
+            {"length": 100, "path": ["Show", "E01.srt"]},
+        ]
+        info["pieces"] = b"\x01" * 100
+        reason = "a hybrid torrent without its piece layers"
+        self.assert_refused(make_torrent(info), reason)
+        self.assertIsNone(
+            torrent_problem(bencode({"info": info, "piece layers": {ROOT: b"\x05" * 64}}))
+        )
 
     def test_both_or_neither_length_and_files(self) -> None:
         both = single_info(files=[{"length": 1, "path": ["a"]}])

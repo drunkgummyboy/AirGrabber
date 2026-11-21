@@ -31,6 +31,8 @@ Plex, the network or AirGrabber's settings happens here, on the loop
   the last one nothing happens. The window closed while that one is still being found: nothing
   opens. `WantNext(by_hand=True)` (N, ⏭) skips: not marked watched. `WantPrevious` (P, ⏮)
   plays the episode before (`previous_in_show`; the Play's `previous_label`) the same way.
+  The Play also carries the show's list for the player's Episodes panel (`_episode_list`);
+  `WantEpisode` (a pick there) plays that one the same way, Resume asked where Plex has a place.
 - The folder library's videos (`is_folder_video`, decided per video: a show's `episodes` may be
   Plex's and the folders' together, app/services/playback.py's `merged_episodes`; app/services/
   folder_library/playing.py): played the same way from their own file, at the person's place (the
@@ -96,6 +98,7 @@ from app.media_protocol import (
     Ready,
     Stopped,
     Tracks,
+    WantEpisode,
     WantNext,
     WantPrevious,
     decode,
@@ -672,6 +675,7 @@ class MediaPlayerHost:
             carry_audio=carry[1] if carry else "",
             carry_subtitles=carry[2] if carry else "",
             previous_label=episode_code(before) if before is not None else None,
+            **_episode_list(title, video, episodes),
         )
         session = _Session(
             title=title,
@@ -987,6 +991,8 @@ class MediaPlayerHost:
             self._want_next(window, head, by_hand=message.by_hand)
         elif isinstance(message, WantPrevious):
             self._want_previous(window, head)
+        elif isinstance(message, WantEpisode):
+            self._want_episode(window, head, message.index)
         elif isinstance(message, FindSubtitles):
             self._job(self._find_subtitles(window, head, message.language), "player subtitles")
         elif isinstance(message, Tracks):
@@ -1148,6 +1154,19 @@ class MediaPlayerHost:
         log.info("Player: the episode before %s", logged_key(session.video.key))
         self._start_play(session.title, before, session.episodes, from_next=True, window=window)
 
+    def _want_episode(self, window: _Window, session: _Session, index: int) -> None:
+        """An episode picked in the player's Episodes panel (index in the list its Play sent):
+        played in the same window, asked Resume where Plex has a place; nothing marked watched."""
+        if session is not window.sessions[-1] or session.local:
+            return
+        if not 0 <= index < len(session.episodes):
+            return
+        picked = session.episodes[index]
+        if picked.key == session.video.key:
+            return
+        log.info("Player: an episode picked in the player for %s", logged_key(session.title.key))
+        self._start_play(session.title, picked, session.episodes, from_next=False, window=window)
+
     async def _always(self, message: AlwaysPick) -> None:
         name = "always_audio" if message.kind == "audio" else "always_subtitles"
         await self._settings.update(**{name: message.language})
@@ -1199,6 +1218,24 @@ class MediaPlayerHost:
             self.on_status(text)
         except Exception:  # the status bar's window may be gone
             log.exception("The player's status line failed")
+
+
+def _episode_list(
+    title: PlexTitle, video: PlexVideo, episodes: Sequence[PlexVideo]
+) -> dict[str, Any]:
+    """The Play's Episodes panel: the show's episodes ("S01E03 · Name"), their seasons (0: a
+    special), watched marks and this one's place; nothing for a film."""
+    if title.kind != "show" or not episodes:
+        return {}
+    keys = [one.key for one in episodes]
+    return {
+        "episodes": tuple(
+            " · ".join(part for part in (episode_code(one), one.title) if part) for one in episodes
+        ),
+        "episode_seasons": tuple(one.season or 0 for one in episodes),
+        "episodes_watched": tuple(one.watched for one in episodes),
+        "episode_index": keys.index(video.key) if video.key in keys else -1,
+    }
 
 
 def _line(title: PlexTitle, video: PlexVideo, episodes: Sequence[PlexVideo] = ()) -> str:

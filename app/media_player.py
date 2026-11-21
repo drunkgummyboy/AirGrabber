@@ -42,7 +42,17 @@ from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias
 
 from app.i18n import N_, number
-from app.media_player_logic import Track, fill_aspect
+from app.media_player_logic import (
+    BRIGHTNESS,
+    NORMAL_SIZE,
+    SUBTITLE_SIZES,
+    VOICE_BANDS,
+    VOLUME_MAX,
+    VOICE_PREAMP,
+    Chapter,
+    Track,
+    fill_aspect,
+)
 from app.media_preview import PreviewFrame
 from app.media_protocol import Message, decode
 
@@ -111,6 +121,67 @@ TEXTS: Mapping[str, str] = MappingProxyType(
         "german": N_("German"),
         "french": N_("French"),
         "spanish": N_("Spanish"),
+        # Round 3 (owner, 2026-11-21): the More menu, clearer voices, the picture, the sleep
+        # timer, chapters, the subtitles' size and the keys' list.
+        "more_tip": N_("Settings"),
+        "voices": N_("Clearer voices (D)"),
+        "voices_on": N_("Clearer voices on"),
+        "voices_off": N_("Clearer voices off"),
+        "picture": N_("Picture: {level} (L)"),
+        "picture_notice": N_("Picture: {level}"),
+        "picture_normal": N_("Normal"),
+        "picture_brighter": N_("Brighter"),
+        "picture_brightest": N_("Brightest"),
+        "fill_entry": N_("Fill the window (A)"),
+        "chapters": N_("Chapters (PgUp / PgDn)"),
+        "chapter": N_("Chapter {number}"),
+        "sleep": N_("Sleep timer: {state} (T)"),
+        "sleep_notice": N_("Sleep timer: {state}"),
+        "sleep_off": N_("Off"),
+        "sleep_end": N_("End of this video"),
+        "sleep_minutes": N_("{n} min"),
+        "sleep_left": N_("{n} min left"),
+        "sleep_paused": N_("Sleep timer: paused"),
+        "subtitle_size": N_("Size: {size}"),
+        "subtitle_size_notice": N_("Subtitles: {size}"),
+        "size_small": N_("Small"),
+        "size_normal": N_("Normal"),
+        "size_large": N_("Large"),
+        "size_extra": N_("Extra large"),
+        "subtitles_higher": N_("Higher on the screen"),
+        "shortcuts_entry": N_("Keyboard shortcuts (?)"),
+        "shortcuts_title": N_("Keyboard shortcuts"),
+        "key_space": N_("Space"),
+        "key_double": N_("F / double-click"),
+        "key_hold_mouse": N_("Hold the mouse"),
+        "key_pause": N_("Play / pause"),
+        "key_jumps": N_("Back 10 s / forward 30 s"),
+        "key_volume": N_("Louder / softer"),
+        "key_mute": N_("Mute"),
+        "key_full": N_("Full screen"),
+        "key_mini": N_("Mini player"),
+        "key_escape": N_("Leave full screen"),
+        "key_episodes": N_("Next / previous episode"),
+        "key_chapters": N_("Previous / next chapter"),
+        "key_tracks": N_("Next subtitles / sound track"),
+        "key_subtitle_sync": N_("Subtitles earlier / later"),
+        "key_audio_sync": N_("Sound earlier / later"),
+        "key_speed": N_("Slower / faster / normal speed"),
+        "key_fill": N_("Fill the window / whole picture"),
+        "key_voices": N_("Clearer voices"),
+        "key_brighter": N_("Brighter picture"),
+        "key_sleep": N_("Sleep timer"),
+        "key_hold": N_("Faster while held"),
+        "key_close": N_("Close"),
+        "key_list": N_("This list"),
+        # Round 4 (owner, 2026-11-21)
+        "ends_at": N_("Ends at {time}"),
+        "skip_credits": N_("Skip credits"),
+        "episodes": N_("Episodes"),
+        "season": N_("Season {n}"),
+        "specials": N_("Specials"),
+        "paused_locked": N_("Paused: this PC was locked"),
+        "paused_sound": N_("Paused: the headphones or speakers went away"),
     }
 )
 
@@ -245,7 +316,7 @@ class EngineSeam(Protocol):
         ...
 
     def volume(self, level: int) -> None:
-        """0–100."""
+        """0–VOLUME_MAX (above 100 libVLC amplifies)."""
         ...
 
     def mute(self, on: bool) -> None: ...
@@ -278,18 +349,42 @@ class EngineSeam(Protocol):
         """Call `callback` (on libVLC's own thread) when a video plays to its end."""
         ...
 
+    def chapters(self) -> list[Chapter]:
+        """The video's chapters (start, name), in order; [] without any (polled)."""
+        ...
+
+    def set_voices(self, on: bool) -> None:
+        """Clearer voices (VOICE_BANDS) on or off; at once, kept for the next video."""
+        ...
+
+    def set_brightness(self, level: int) -> None:
+        """BRIGHTNESS[level] (0: the picture as it is); at once, kept for the next video."""
+        ...
+
+    def restyle(self, size: int, raised: bool) -> None:
+        """The subtitles at SUBTITLE_SIZES[size], `raised` RAISED_MARGIN higher. libVLC takes
+        these only when it starts: a fresh one, drawing into the same window, with the sound
+        and the picture as they were and no video (the window opens it again where it was)."""
+        ...
+
 
 class VlcEngine:
     """EngineSeam on python-vlc. A thin adapter: everything the player decides lives in the
     window. `start` raises when the binding or libvlc.dll can't be loaded."""
 
-    def __init__(self, vlc: Any, instance: Any) -> None:
+    def __init__(self, vlc: Any, instance: Any, arguments: Sequence[str] = ()) -> None:
         self._vlc = vlc
         self._instance = instance
+        self._arguments = list(arguments)  # libVLC's start (`restyle` adds the subtitles' look)
         self._player = instance.media_player_new()
         self._media: Any = None
         self._path = ""
         self._started = False
+        self._hwnd = 0
+        self._on_end: list[Callable[[], None]] = []
+        self._voices = False
+        self._brightness = 0
+        self._chapters: tuple[Any, int, list[Chapter]] | None = None  # (media, count, chapters)
 
     @classmethod
     def start(cls, folder: str | None) -> VlcEngine:
@@ -309,7 +404,7 @@ class VlcEngine:
             raise OSError("libVLC didn't start") from exc
         if instance is None:
             raise OSError("libVLC didn't start")
-        return cls(vlc, instance)
+        return cls(vlc, instance, arguments)
 
     def load(self, path: str) -> None:
         self._path = path
@@ -366,7 +461,7 @@ class VlcEngine:
         self._player.add_slave(self._vlc.MediaSlaveType.subtitle, uri, True)
 
     def volume(self, level: int) -> None:
-        self._player.audio_set_volume(max(0, min(100, level)))
+        self._player.audio_set_volume(max(0, min(VOLUME_MAX, level)))
 
     def mute(self, on: bool) -> None:
         self._player.audio_set_mute(on)
@@ -389,6 +484,7 @@ class VlcEngine:
         self._player.video_set_scale(0)
 
     def attach(self, hwnd: int) -> None:
+        self._hwnd = hwnd
         self._player.set_hwnd(hwnd)
         # The window gets the mouse (double-click, the pointer that shows the controls) and
         # the keys, not libVLC's own handling.
@@ -407,8 +503,103 @@ class VlcEngine:
         self._instance.release()
 
     def on_end(self, callback: Callable[[], None]) -> None:
+        self._on_end.append(callback)
+        self._listen(callback)
+
+    def _listen(self, callback: Callable[[], None]) -> None:
         events = self._player.event_manager()
         events.event_attach(self._vlc.EventType.MediaPlayerEndReached, lambda _event: callback())
+
+    def chapters(self) -> list[Chapter]:
+        # libVLC's count first (cheap); the descriptions only when it changes, and given back
+        # (python-vlc's own call never frees them).
+        count = int(self._player.get_chapter_count())
+        kept = self._chapters
+        if kept is not None and kept[0] is self._media and kept[1] == count:
+            return kept[2]
+        found: list[Chapter] = []
+        if count > 1:
+            vlc = self._vlc
+            # libVLC fills in an array of pointers; python-vlc types it one level short.
+            first = ctypes.POINTER(vlc.ChapterDescription)()
+            n = int(
+                vlc.libvlc_media_player_get_full_chapter_descriptions(
+                    self._player, -1, ctypes.byref(first)
+                )
+            )
+            described = ctypes.cast(first, ctypes.POINTER(ctypes.POINTER(vlc.ChapterDescription)))
+            try:
+                for index in range(max(0, n)):
+                    chapter = described[index].contents
+                    name = chapter.name or b""
+                    text = name.decode("utf-8", "replace") if isinstance(name, bytes) else str(name)
+                    found.append((max(0, int(chapter.time_offset)), text.strip()))
+            finally:
+                if n > 0:
+                    vlc.libvlc_chapter_descriptions_release(described, n)
+        found.sort()
+        self._chapters = (self._media, count, found)
+        return found
+
+    def set_voices(self, on: bool) -> None:
+        self._voices = on
+        self._apply_voices()
+
+    def _apply_voices(self) -> None:
+        if not self._voices:
+            self._player.set_equalizer(None)
+            return
+        equalizer = self._vlc.AudioEqualizer()
+        equalizer.set_preamp(VOICE_PREAMP)
+        for band, amp in enumerate(VOICE_BANDS):
+            equalizer.set_amp_at_index(amp, band)
+        self._player.set_equalizer(equalizer)  # libVLC copies it
+        equalizer.release()
+
+    def set_brightness(self, level: int) -> None:
+        self._brightness = max(0, min(len(BRIGHTNESS) - 1, level))
+        self._apply_brightness()
+
+    def _apply_brightness(self) -> None:
+        option = self._vlc.VideoAdjustOption
+        if not self._brightness:
+            self._player.video_set_adjust_int(option.Enable, 0)
+            return
+        brightness, gamma = BRIGHTNESS[self._brightness]
+        self._player.video_set_adjust_int(option.Enable, 1)
+        self._player.video_set_adjust_float(option.Brightness, brightness)
+        self._player.video_set_adjust_float(option.Gamma, gamma)
+
+    def restyle(self, size: int, raised: bool) -> None:
+        from app.media_player_logic import RAISED_MARGIN
+
+        scale = SUBTITLE_SIZES[max(0, min(len(SUBTITLE_SIZES) - 1, size))]
+        look = [f"--sub-text-scale={scale}"] if size != NORMAL_SIZE else []
+        if raised:
+            look.append(f"--sub-margin={RAISED_MARGIN}")
+        instance = self._vlc.Instance(*self._arguments, *look)
+        if instance is None:
+            raise OSError("libVLC didn't start")
+        old_player, old_instance, old_media = self._player, self._instance, self._media
+        old_player.stop()
+        old_player.release()
+        if old_media is not None:
+            old_media.release()
+        old_instance.release()  # the seek bar's pictures keep theirs until they let go
+        self._instance = instance
+        self._player = instance.media_player_new()
+        self._media = None
+        self._path = ""
+        self._started = False
+        self._chapters = None
+        if self._hwnd:
+            self.attach(self._hwnd)
+        for callback in self._on_end:
+            self._listen(callback)
+        if self._voices:
+            self._apply_voices()
+        if self._brightness:
+            self._apply_brightness()
 
     @staticmethod
     def _tracks(described: Any) -> list[Track]:
@@ -461,6 +652,7 @@ class TrackLists:
     generation: int
     audio: tuple[Track, ...]
     subtitles: tuple[Track, ...]
+    chapters: tuple[Chapter, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,7 +667,17 @@ class Dropped:
     paths: tuple[str, ...]
 
 
-Event: TypeAlias = Incoming | InputEnded | Tick | TrackLists | VideoEnded | Dropped | PreviewFrame
+@dataclass(frozen=True, slots=True)
+class MediaKey:
+    """A media key (the keyboard's ▶⏸ / ⏭ / ⏮ / ⏹, a headset's button): "play_pause", "next",
+    "previous" or "stop" (app/media_keys.py, queued by its window procedure, no Tk there)."""
+
+    name: str
+
+
+Event: TypeAlias = (
+    Incoming | InputEnded | Tick | TrackLists | VideoEnded | Dropped | PreviewFrame | MediaKey
+)
 
 
 def read_input(stdin: Any, events: queue.Queue[Event]) -> None:
@@ -512,7 +714,9 @@ class EngineWorker:
         self._submitted = 0
         self._done = 0
         self._generation = 0  # the video being watched; 0: none
-        self._lists: tuple[tuple[Track, ...], tuple[Track, ...]] | None = None
+        self._lists: (
+            tuple[tuple[Track, ...], tuple[Track, ...], tuple[Chapter, ...]] | None
+        ) = None
         self._thread = threading.Thread(target=self._run, name="media-engine", daemon=True)
 
     def start(self) -> None:
@@ -577,9 +781,14 @@ class EngineWorker:
         try:
             ms = self.engine.position_ms()
             duration = self.engine.duration_ms()
-            lists = (tuple(self.engine.audio_tracks()), tuple(self.engine.subtitle_tracks()))
+            audio, subtitles = tuple(self.engine.audio_tracks()), tuple(self.engine.subtitle_tracks())
         except Exception:
             return
+        try:
+            chapters = tuple(self.engine.chapters())
+        except Exception:
+            chapters = ()  # no chapters, never no position
+        lists = (audio, subtitles, chapters)
         self._events.put(Tick(generation, ms, duration, self._done))
         if lists != self._lists:
             self._lists = lists
@@ -706,6 +915,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         gc_guard.start(root)
         set_window_icon(root)
         from app.forge.ui.file_drops import windows_native  # stdlib + ctypes: Explorer drops
+        from app.media_keys import windows_media_keys
+        from app.sound_device import sound_watch
+        from app.taskbar_buttons import thumb_buttons
 
         code = run_player(
             root,
@@ -718,6 +930,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             on_screen=on_screen,
             drops=windows_native(),
             preview=_preview_of(engine),
+            media_keys=windows_media_keys(),
+            sound=sound_watch(),
+            thumbs=thumb_buttons(),
         )
     except Exception:
         return EXIT_FAILED

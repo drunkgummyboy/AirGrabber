@@ -1455,6 +1455,55 @@ NL: dict[str, str] = {
     "That video isn't there any more.": "Die video is er niet meer.",
     "Finding the file…": "Het bestand wordt gezocht…",
     "That isn't a video file.": "Dat is geen videobestand.",
+    # The player, round 3 (app/media_player.py's TEXTS)
+    "Clearer voices (D)": "Duidelijkere stemmen (D)",
+    "Clearer voices on": "Duidelijkere stemmen aan",
+    "Clearer voices off": "Duidelijkere stemmen uit",
+    "Picture: {level} (L)": "Beeld: {level} (L)",
+    "Picture: {level}": "Beeld: {level}",
+    "Brighter": "Lichter",
+    "Brightest": "Nog lichter",
+    "Fill the window (A)": "Venster vullen (A)",
+    "Chapters (PgUp / PgDn)": "Hoofdstukken (PgUp / PgDn)",
+    "Chapter {number}": "Hoofdstuk {number}",
+    "Sleep timer: {state} (T)": "Slaaptimer: {state} (T)",
+    "Sleep timer: {state}": "Slaaptimer: {state}",
+    "End of this video": "Einde van deze video",
+    "{n} min": "{n} min",
+    "Sleep timer: paused": "Slaaptimer: gepauzeerd",
+    "Size: {size}": "Grootte: {size}",
+    "Subtitles: {size}": "Ondertitels: {size}",
+    "Extra large": "Extra groot",
+    "Higher on the screen": "Hoger in beeld",
+    "Keyboard shortcuts (?)": "Sneltoetsen (?)",
+    "Keyboard shortcuts": "Sneltoetsen",
+    "Space": "Spatie",
+    "F / double-click": "F / dubbelklik",
+    "Hold the mouse": "Muis ingedrukt houden",
+    "Play / pause": "Afspelen / pauzeren",
+    "Back 10 s / forward 30 s": "10 s terug / 30 s vooruit",
+    "Louder / softer": "Harder / zachter",
+    "Mute": "Geluid uit",
+    "Full screen": "Volledig scherm",
+    "Mini player": "Minispeler",
+    "Leave full screen": "Volledig scherm verlaten",
+    "Next / previous episode": "Volgende / vorige aflevering",
+    "Previous / next chapter": "Vorig / volgend hoofdstuk",
+    "Next subtitles / sound track": "Volgende ondertitels / geluidsspoor",
+    "Subtitles earlier / later": "Ondertitels eerder / later",
+    "Sound earlier / later": "Geluid eerder / later",
+    "Slower / faster / normal speed": "Trager / sneller / normale snelheid",
+    "Fill the window / whole picture": "Venster vullen / hele beeld",
+    "Clearer voices": "Duidelijkere stemmen",
+    "Brighter picture": "Lichter beeld",
+    "Sleep timer": "Slaaptimer",
+    "Faster while held": "Sneller zolang ingedrukt",
+    "This list": "Deze lijst",
+    # The player, round 4
+    "Ends at {time}": "Klaar om {time}",
+    "Skip credits": "Aftiteling overslaan",
+    "Paused: this PC was locked": "Gepauzeerd: deze pc werd vergrendeld",
+    "Paused: the headphones or speakers went away": "Gepauzeerd: de koptelefoon of speakers vielen weg",
     "VLC": "VLC",
     "Not checked yet": "Nog niet gecontroleerd",
     "No show or film libraries found on this server":
@@ -1575,9 +1624,21 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
-    "AirGrabber on your phone": "AirGrabber op je telefoon",
-    "The Companion app for Android brings your library to your phone: browse it and watch there, search for something new to download, and copy films onto the phone for later. Switch it on in Settings → Phone connection.":
-        "De Companion-app voor Android zet je bibliotheek op je telefoon: blader erdoor en kijk erop, zoek iets nieuws om te downloaden en zet films op je telefoon voor later. Zet het aan bij Instellingen → Telefoonverbinding.",
+    "Player: Clearer voices (D), a brighter picture (L) and a sleep timer (T).":
+        "Speler: Duidelijkere stemmen (D), een helderder beeld (L) en een slaaptimer (T).",
+    "Player: media keys work, the taskbar preview has ⏮ ⏯ ⏭, and ? shows all the keys.":
+        "Speler: mediatoetsen werken, het taakbalkvoorbeeld heeft ⏮ ⏯ ⏭, en ? toont alle toetsen.",
+    "Player: it pauses when the PC locks or your headset is unplugged.":
+        "Speler: hij pauzeert als de pc vergrendelt of je headset wordt losgekoppeld.",
+    "Player: chapters on the timeline (Page Up / Page Down), the time it ends, and the subtitle size.":
+        "Speler: hoofdstukken op de tijdlijn (Page Up / Page Down), hoe laat hij afloopt, en de grootte van ondertitels.",
+    "Player: hold the mouse on the picture for 2× speed, volume up to 150%, and Skip credits for films.":
+        "Speler: houd de muis ingedrukt op het beeld voor 2× snelheid, volume tot 150%, en aftiteling overslaan bij films.",
+    "Torrents that Download Station called invalid are now sent as a magnet link.":
+        "Torrents die Download Station ongeldig noemde, gaan nu als magnetlink.",
+    "The player's new look": "De speler in een nieuw jasje",
+    "One floating control bar, with the title in a small pill, so you see more of the picture. The episode list, the sleep timer and the settings are in that bar too.":
+        "Eén zwevende bedieningsbalk, met de titel in een klein label, zodat je meer van het beeld ziet. De afleveringenlijst, de slaaptimer en de instellingen zitten ook in die balk.",
     "MediaForge's video tools now come with AirGrabber: trailers work without switching anything on first.":
         "De videohulpmiddelen van MediaForge komen nu met AirGrabber mee: trailers werken zonder eerst iets aan te zetten.",
     "▶ Play also finds films in your library folders, and when Plex runs on this PC.":

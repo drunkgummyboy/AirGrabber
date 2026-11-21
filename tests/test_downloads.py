@@ -46,7 +46,7 @@ from app.services.remote_downloads import RemoteDownloads
 from app.services.torrent_app import TorrentAppService
 from app.services.settings import SettingsService
 from app.services.downloads import ProgramInTorrent
-from tests.test_torrent_file import info_hash_of, make_torrent, single_info
+from tests.test_torrent_file import bencode, hybrid_info, info_hash_of, make_torrent, single_info
 
 INFO = single_info()
 OTHER_INFO = single_info("Another.Show.S02E01")
@@ -402,6 +402,28 @@ class BrokenTorrentTests(DownloadTestCase):
         self.assertIn("No .torrent file from itorrents.org (not a valid torrent: truncated)", output)
         for secret in (HASH, HASH.upper(), OTHER_HASH, API_KEY, "prowlarr.local", "itorrents.org/"):
             self.assertNotIn(secret, output)
+
+    async def test_hybrid_torrent_from_itorrents_sends_the_magnet(self) -> None:
+        # The Pirate Bay's 4K films (2026-11-21): itorrents.org's copy of a hybrid torrent
+        # lacks its piece layers, and Download Station called it an "invalid torrent file".
+        info = hybrid_info()
+        film_hash = info_hash_of(info)
+        item = release(title="Film.2026.2160p.mkv", info_hash=film_hash)
+        self.serve(
+            f"https://itorrents.org/torrent/{film_hash.upper()}.torrent",
+            bencode({"info": info}),
+        )
+        await self.set_up_remote()
+        with self.assertLogs("app.services.downloads", "INFO") as logs:
+            result = await self.service.grab(item, EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SENT)
+        self.assertEqual(self.station.magnets, [item.magnet])
+        self.assertEqual(self.watch_files(), [])
+        self.assertIn(
+            "No .torrent file from itorrents.org (not a valid torrent: a hybrid torrent "
+            "without its piece layers)",
+            "\n".join(logs.output),
+        )
 
     async def test_folder_mode_without_a_remote_program_fails(self) -> None:
         self.serve(DIRECT_URL, OTHER_TORRENT)

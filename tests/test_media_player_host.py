@@ -29,6 +29,7 @@ from app.media_protocol import (
     Ready,
     Stopped,
     Tracks,
+    WantEpisode,
     WantNext,
     WantPrevious,
     decode,
@@ -755,6 +756,31 @@ class NextEpisodeTests(HostTestCase):
         self.assertIsNone(film.plays()[-1].previous_label)
         await self.tell(film, WantPrevious())
         self.assertEqual(len(film.plays()), 2)
+
+    async def test_the_play_carries_the_episode_list_and_a_pick_plays_it(self) -> None:
+        process = await self.play(ARK, E2, EPISODES)
+        [sent] = process.plays()
+        self.assertEqual(
+            sent.episodes, ("S02E01 · Part 1", "S02E02 · Part 2", "S02E03 · Part 3", "S00E01")
+        )
+        self.assertEqual(sent.episode_seasons, (2, 2, 2, 0))
+        self.assertEqual(sent.episodes_watched, (False, False, False, False))
+        self.assertEqual(sent.episode_index, 1)
+        await self.tell(process, Position(ms=600000, duration_ms=2700000, state="playing"))
+        await self.tell(process, WantEpisode(index=2))
+        await self.tell(process, Stopped(ms=601000, duration_ms=2700000))
+        then = process.plays()[-1]
+        self.assertEqual(then.file, str(self.season_here / "The Ark - S02E03.mkv"))
+        self.assertEqual((then.start_ms, then.ask_resume), (30000, True))  # a pick: Resume asked
+        self.assertEqual(then.episode_index, 2)
+        self.assertEqual(self.scrobbles(), [])  # a pick marks nothing watched
+
+    async def test_a_film_has_no_episode_list(self) -> None:
+        film = await self.play(DUNE, DUNE_VIDEO)
+        [sent] = film.plays()
+        self.assertEqual((sent.episodes, sent.episode_index), ((), -1))
+        await self.tell(film, WantEpisode(index=0))
+        self.assertEqual(len(film.plays()), 1)
 
     def test_previous_in_show_keeps_specials_apart(self) -> None:
         self.assertEqual(previous_in_show(E3, EPISODES), E2)

@@ -1,8 +1,8 @@
 """A real check of a fetched .torrent file before it is saved, opened or sent anywhere.
 
 Download Station (and other programs) reject a damaged file as "invalid torrent file", so a
-file is accepted only when it bdecodes completely and strictly, is a BitTorrent v1 (or hybrid)
-torrent, and — when the release's info hash is known — is the torrent for that hash: SHA-1 of
+file is accepted only when it bdecodes completely and strictly, is a BitTorrent v1 (or hybrid,
+with its piece layers) torrent, and — when the release's info hash is known — is the torrent for that hash: SHA-1 of
 the `info` dictionary's exact bytes in the file (never re-encoded).
 
 Pure stdlib, no I/O. The reasons returned are short English texts for the log; they never hold
@@ -33,7 +33,7 @@ def torrent_problem(data: bytes, info_hash: str | None = None) -> str | None:
     info = top.get(b"info")
     if not isinstance(info, dict):
         return "no info dictionary"
-    problem = _info_problem(info)
+    problem = _info_problem(info) or _layers_problem(top, info)
     if problem is not None:
         return problem
     if info_hash:
@@ -78,6 +78,35 @@ def _info_problem(info: dict[bytes, BValue]) -> str | None:
             return "a file has no path"
         if not all(isinstance(part, bytes) for part in path):
             return "a file path is not text"
+    return None
+
+
+def _layers_problem(top: dict[bytes, BValue], info: dict[bytes, BValue]) -> str | None:
+    """A hybrid (v1 + v2) torrent must carry its `piece layers` (BEP 52): one entry per file
+    longer than a piece, keyed by its `pieces root`. Caches that keep only the info dictionary
+    (itorrents.org) serve such a torrent without them, and Download Station calls it an
+    "invalid torrent file" (2026-11-21); its magnet works, as the program fetches them itself."""
+    tree = info.get(b"file tree")
+    if not isinstance(tree, dict):
+        return None
+    piece_length = info[b"piece length"]  # checked by _info_problem
+    assert isinstance(piece_length, int)
+    layers = top.get(b"piece layers")
+    present = layers if isinstance(layers, dict) else {}
+    folders: list[BValue] = [tree]
+    while folders:
+        folder = folders.pop()
+        if not isinstance(folder, dict):
+            continue
+        for name, child in folder.items():
+            if name != b"":
+                folders.append(child)
+            elif isinstance(child, dict):
+                length, root = child.get(b"length"), child.get(b"pieces root")
+                if not isinstance(length, int) or length <= piece_length:
+                    continue
+                if not isinstance(root, bytes) or root not in present:
+                    return "a hybrid torrent without its piece layers"
     return None
 
 

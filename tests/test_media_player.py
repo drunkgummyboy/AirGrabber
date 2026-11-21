@@ -56,6 +56,7 @@ from app.media_protocol import (
     Ready,
     Stopped,
     Tracks,
+    WantEpisode,
     WantNext,
     WantPrevious,
     decode,
@@ -77,6 +78,7 @@ class FakeEngine:
         self.duration = 0
         self.audio: list[Track] = []
         self.subtitles: list[Track] = []
+        self.chapter_list: list[tuple[int, str]] = []
         self.hang: threading.Event | None = None
         self.hanging = threading.Event()
         self._ended: Callable[[], None] | None = None
@@ -149,6 +151,18 @@ class FakeEngine:
         """libVLC's end-of-video event (on a thread of its own)."""
         assert self._ended is not None
         threading.Thread(target=self._ended, daemon=True).start()
+
+    def chapters(self) -> list[tuple[int, str]]:
+        return list(self.chapter_list)
+
+    def set_voices(self, on: bool) -> None:
+        self.calls.append(("set_voices", on))
+
+    def set_brightness(self, level: int) -> None:
+        self.calls.append(("set_brightness", level))
+
+    def restyle(self, size: int, raised: bool) -> None:
+        self.calls.append(("restyle", size, raised))
 
 
 class FakeStdin:
@@ -509,6 +523,14 @@ class KeyTests(PlayerTestCase):
         press("n")  # no episode list: nothing
         press("p")
         self.assertFalse(any(isinstance(m, (WantNext, WantPrevious)) for m in self.sent()))
+        press("d", "set_voices", True)  # round 3
+        press("l", "set_brightness", 1)
+        press("t")
+        self.assertEqual(window.sleep, 15)
+        press("Next")  # no chapters: nothing
+        press("Prior")
+        press("question")
+        press("F1")
         self.assertEqual(seen, set(KEYS.values()))
         press("Escape")  # in a window: nothing, as in VLC
         self.root.update()
@@ -855,6 +877,397 @@ class FlashTests(PlayerTestCase):
         self.assertEqual(window.flashed, "")
 
 
+class FakeMediaKeys:
+    """The media keys' seam: the window they went to, a key pressed at will."""
+
+    def __init__(self) -> None:
+        self.window = 0
+        self.deliver: Callable[[str], None] | None = None
+        self.detached = False
+
+    def attach(self, window_id: int, deliver: Callable[[str], None]) -> bool:
+        self.window, self.deliver = window_id, deliver
+        return True
+
+    def detach(self) -> None:
+        self.detached = True
+
+    def press(self, name: str) -> None:
+        assert self.deliver is not None
+        self.deliver(name)
+
+
+class RoundThreeTests(PlayerTestCase):
+    """Round 3 (owner, 2026-11-21): clearer voices, the picture, the sleep timer, chapters, the
+    subtitles' look, a held press, the keys' list, the media keys and the More menu."""
+
+    def test_d_switches_clearer_voices_and_it_is_remembered(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        window.press("d")
+        self.pump(self.called("set_voices", True), "voices on")
+        self.assertEqual(window.notice_text, "Clearer voices on")
+        self.assertIn("Clearer voices (D)", window.audio_menu_labels())
+        window.close()
+        self.assertTrue(json.loads(self.settings.read_text(encoding="utf-8"))["voices"])
+        self.engine.calls.clear()
+        again = self.start()
+        self.pump(self.called("set_voices", True), "voices on at the start")
+        self.assertTrue(again.voices)
+
+    def test_l_steps_through_the_picture(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        for level in (1, 2, 0):
+            window.press("l")
+            self.pump(self.called("set_brightness", level), f"picture {level}")
+        self.assertEqual(window.notice_text, "Picture: Normal")
+
+    def test_the_sleep_timer_fades_then_pauses(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=1_000)
+        window.press("t")
+        self.assertEqual(window.sleep, 15)
+        self.assertEqual(window.notice_text, "Sleep timer: 15 min")
+        self.assertIn("Sleep timer: 15 min left (T)", window.more_menu_labels())
+        window._sleep_tick()
+        self.clock.now += 890  # 10 s left: the sound fades
+        window._sleep_tick()
+        self.pump(self.called("volume", 67), "faded")
+        self.assertFalse(window.paused)
+        self.clock.now += 11
+        window._sleep_tick()
+        self.assertTrue(window.paused)
+        self.assertEqual(window.sleep, 0)
+        self.assertEqual(window.notice_text, "Sleep timer: paused")
+        self.pump(lambda: self.engine.calls[-1] == ("volume", 100), "the sound back")
+
+    def test_the_sleep_timer_counts_only_playing_time(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=1_000)
+        window.set_sleep(30)
+        window._sleep_tick()
+        window.press("space")  # paused
+        self.clock.now += 600
+        window._sleep_tick()
+        self.assertEqual(window.sleep_left, 1_800.0)
+
+    def test_t_goes_round_to_off(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        for expected in (15, 30, 45, 60, 90, -1, 0):
+            window.press("t")
+            self.assertEqual(window.sleep, expected)
+        self.assertEqual(window.notice_text, "Sleep timer: Off")
+
+    def test_sleep_at_the_end_of_this_video_asks_for_no_next_episode(self) -> None:
+        from app.media_player_logic import SLEEP_END
+
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, play(next_label="S01E04"), at=3_590_000)
+        window.set_sleep(SLEEP_END)
+        self.wait(0.6)
+        self.assertFalse(window.countdown_shown)
+        self.engine.end()
+        self.pump(lambda: any(isinstance(m, Ended) for m in self.sent()), "Ended")
+        self.assertFalse(any(isinstance(m, WantNext) for m in self.sent()))
+        self.assertEqual(window.sleep, 0)
+        self.assertEqual(window.notice_text, "Sleep timer: paused")
+
+    def test_page_keys_jump_between_chapters(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.engine.chapter_list = [(0, "Opening"), (600_000, ""), (1_200_000, "Finale")]
+        self.playing(window, at=700_000)
+        self.pump(lambda: len(window.chapters) == 3, "the chapters")
+        window.press("Next")
+        self.pump(self.called("seek", 1_200_000), "the next chapter")
+        self.assertEqual(window.notice_text, "Finale")
+        window.press("Prior")  # just into it: the one before
+        self.pump(self.called("seek", 600_000), "the chapter before")
+        self.assertEqual(window.notice_text, "Chapter 2")
+        self.assertIn("Chapters (PgUp / PgDn)", window.more_menu_labels())
+        self.assertTrue(window.seek_bar.find_withtag("chapter"))
+
+    def test_no_chapters_no_chapters_line(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        self.assertEqual(
+            window.more_menu_labels(),
+            [
+                "Picture: Normal (L)",
+                "Fill the window (A)",
+                "Stay on top",
+                "Sleep timer: Off (T)",
+                "Keyboard shortcuts (?)",
+            ],
+        )
+
+    def test_a_bigger_subtitle_opens_the_video_again_where_it_was(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=60_000)
+        window.set_subtitle_size(2)
+        self.pump(self.called("play",), "played again")
+        calls = self.engine.calls
+        self.assertLess(calls.index(("restyle", 2, False)), calls.index(("seek", 60_000)))
+        self.assertIn(("load", play().file), calls)
+        self.assertEqual(window.notice_text, "Subtitles: Large")
+        self.assertIn("Size: Large", window.subtitle_menu_labels())
+        window.close()
+        saved = json.loads(self.settings.read_text(encoding="utf-8"))
+        self.assertEqual(saved["subtitle_size"], 2)
+        self.engine.calls.clear()
+        self.start()
+        self.pump(self.called("restyle", 2, False), "restyled at the start")
+        calls = self.engine.calls
+        self.pump(lambda: any(call[0] == "attach" for call in calls), "attached")
+        attach = next(i for i, call in enumerate(calls) if call[0] == "attach")
+        self.assertLess(calls.index(("restyle", 2, False)), attach)
+
+    def test_higher_subtitles_keep_a_pause(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=60_000)
+        window.press("space")
+        self.engine.calls.clear()
+        window.toggle_subtitles_higher()
+        self.pump(self.called("pause",), "paused again")
+        self.assertIn(("restyle", 1, True), self.engine.calls)
+        self.assertTrue(window.paused)
+
+    def test_a_held_press_plays_faster_until_let_go(self) -> None:
+        window = self.start()
+        self.engine.duration = 3_600_000
+        self.playing(window, at=1_000)
+        self.root.update()
+        at = int(time.monotonic() * 1000) & 0x7FFFFFFF
+        window.video.event_generate("<ButtonPress-1>", x=10, y=10, time=at)
+        self.pump(lambda: window.held, "held")
+        self.pump(self.called("set_rate", 2.0), "faster")
+        window.video.event_generate("<ButtonRelease-1>", x=10, y=10, time=at + 900)
+        self.pump(self.called("set_rate", 1.0), "back to normal")
+        self.assertFalse(window.held)
+        self.wait(0.4)
+        self.assertFalse(window.paused)  # no click
+
+    def test_question_mark_shows_the_keys_and_esc_hides_them(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        window.press("question")
+        self.root.update()
+        self.assertTrue(window.shortcuts_shown)
+        window.press("Escape")
+        self.root.update()
+        self.assertFalse(window.shortcuts_shown)
+        window.press("F1")
+        self.root.update()
+        self.assertTrue(window.shortcuts_shown)
+
+    def test_media_keys(self) -> None:
+        keys = FakeMediaKeys()
+        window = self.start(media_keys=keys)
+        self.assertEqual(keys.window, window.video.winfo_id())
+        self.engine.duration = 3_600_000
+        self.playing(window, at=60_000)
+        keys.press("play_pause")
+        self.pump(lambda: window.paused, "paused by the key")
+        keys.press("play_pause")
+        self.pump(lambda: not window.paused, "playing by the key")
+        keys.press("next")  # a film: a jump
+        self.pump(self.called("seek", 90_000), "forward")
+        keys.press("stop")
+        self.pump(lambda: window.paused, "stopped: paused")
+        window.close()
+        self.assertTrue(keys.detached)
+
+    def test_the_next_media_key_asks_for_the_next_episode(self) -> None:
+        keys = FakeMediaKeys()
+        window = self.start(media_keys=keys)
+        self.playing(window, play(next_label="S01E04"), at=60_000)
+        keys.press("next")
+        self.pump(lambda: WantNext(by_hand=True) in self.sent(), "WantNext")
+
+
+class FakeSound:
+    def __init__(self) -> None:
+        self.deliver: Callable[[str], None] | None = None
+        self.stopped = False
+
+    def start(self, deliver: Callable[[str], None]) -> None:
+        self.deliver = deliver
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class FakeThumbs:
+    def __init__(self) -> None:
+        self.window = 0
+        self.deliver: Callable[[str], None] | None = None
+        self.looks: list[tuple[bool, tuple[str, ...], tuple[bool, ...]]] = []
+        self.detached = False
+
+    def attach(self, window: int, deliver: Callable[[str], None]) -> bool:
+        self.window, self.deliver = window, deliver
+        return True
+
+    def update(self, playing: bool, tips: Any, enabled: Any) -> None:
+        self.looks.append((playing, tuple(tips), tuple(enabled)))
+
+    def detach(self) -> None:
+        self.detached = True
+
+
+def show_play(**changes: Any) -> Play:
+    return play(
+        episodes=("S01E01 · Pilot", "S01E02", "S01E03 · The Night Watch", "S02E01 · Back"),
+        episode_seasons=(1, 1, 1, 2),
+        episodes_watched=(True, True, False, False),
+        episode_index=2,
+        previous_label="S01E02",
+        next_label="S02E01",
+        **changes,
+    )
+
+
+class RoundFourTests(PlayerTestCase):
+    """Round 4 (owner, 2026-11-21): Ends at, the sound up to 150 %, a pause on a lock or the
+    sound gone, the Episodes panel, the taskbar preview's buttons, Skip credits."""
+
+    def test_ends_at_says_when_it_ends(self) -> None:
+        import time as clock_module
+
+        window = self.start(wall=lambda: 0.0)
+        self.engine.duration = 3_600_000
+        self.playing(window, at=600_000)
+        self.pump(lambda: window.ends_label.cget("text") != "", "Ends at")
+        expected = clock_module.strftime("%H:%M", clock_module.localtime(3_000.0))
+        self.assertEqual(window.ends_label.cget("text"), f"Ends at {expected}")
+
+    def test_the_sound_goes_up_to_150(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        window.set_volume(148)
+        window.press("Up")
+        self.pump(self.called("volume", 150), "150 %")
+        self.assertEqual(window.volume, 150)
+        window.close()
+        self.assertEqual(json.loads(self.settings.read_text(encoding="utf-8"))["volume"], 150)
+
+    def test_a_lock_or_the_sound_gone_pauses(self) -> None:
+        keys, sound = FakeMediaKeys(), FakeSound()
+        window = self.start(media_keys=keys, sound=sound)
+        self.engine.duration = 3_600_000
+        self.playing(window, at=60_000)
+        keys.press("lock")
+        self.pump(lambda: window.paused, "paused by the lock")
+        self.assertEqual(window.notice_text, "Paused: this PC was locked")
+        keys.press("lock")  # paused already: stays paused
+        self.wait(0.2)
+        self.assertTrue(window.paused)
+        window.press("space")
+        assert sound.deliver is not None
+        sound.deliver("sound_gone")
+        self.pump(lambda: window.paused, "paused by the sound gone")
+        self.assertEqual(window.notice_text, "Paused: the headphones or speakers went away")
+        window.close()
+        self.assertTrue(sound.stopped)
+
+    def test_the_episodes_panel_lists_the_season_and_a_pick_asks_for_it(self) -> None:
+        window = self.start()
+        self.playing(window, show_play(), at=1_000)
+        self.root.update()
+        self.assertTrue(window.episodes_button.winfo_manager())
+        window.toggle_episodes()
+        self.root.update()
+        self.assertTrue(window.episodes_shown)
+        self.assertEqual(
+            window.episode_rows(),
+            ["S01E01 · Pilot  ✓", "S01E02  ✓", "S01E03 · The Night Watch"],
+        )
+        window._step_season(1)
+        self.assertEqual(window.episode_rows(), ["S02E01 · Back"])
+        window.want_episode(3)
+        self.pump(lambda: WantEpisode(index=3) in self.sent(), "WantEpisode")
+        self.assertFalse(window.episodes_shown)
+        window.toggle_episodes()
+        self.root.update()
+        window.press("Escape")
+        self.root.update()
+        self.assertFalse(window.episodes_shown)
+        window.want_episode(2)  # this one: nothing asked
+        self.assertEqual([m for m in self.sent() if isinstance(m, WantEpisode)], [
+            WantEpisode(index=3)
+        ])
+
+    def test_the_wheel_scrolls_the_episodes_not_the_sound(self) -> None:
+        window = self.start()
+        self.playing(window, show_play(), at=1_000)
+        window.toggle_episodes()
+        self.root.update()
+        card = window._episodes_card
+        inside = SimpleNamespace(
+            delta=120, x_root=card.winfo_rootx() + 10, y_root=card.winfo_rooty() + 10
+        )
+        self.assertIsNone(window._on_wheel(inside))
+        self.assertEqual(window.volume, 100)
+        outside = SimpleNamespace(delta=-120, x_root=-5_000, y_root=-5_000)
+        self.assertEqual(window._on_wheel(outside), "break")
+        self.assertEqual(window.volume, 95)
+
+    def test_a_film_has_no_episodes_button(self) -> None:
+        window = self.start()
+        self.playing(window, at=1_000)
+        self.root.update()
+        self.assertFalse(window.episodes_button.winfo_manager())
+        window.toggle_episodes()
+        self.assertFalse(window.episodes_shown)
+
+    def test_the_taskbar_buttons(self) -> None:
+        thumbs = FakeThumbs()
+        window = self.start(thumbs=thumbs)
+        self.engine.duration = 3_600_000
+        self.playing(window, show_play(), at=60_000)
+        self.root.update()
+        self.pump(lambda: thumbs.window != 0, "attached")
+        playing, tips, enabled = thumbs.looks[-1]
+        self.assertTrue(playing)
+        self.assertEqual(tips, ("Previous episode (P)", "Pause (Space)", "Next episode (N)"))
+        self.assertEqual(enabled, (True, True, True))
+        assert thumbs.deliver is not None
+        thumbs.deliver("play_pause")
+        self.pump(lambda: window.paused, "paused from the taskbar")
+        self.assertFalse(thumbs.looks[-1][0])
+        thumbs.deliver("next")
+        self.pump(lambda: WantNext(by_hand=True) in self.sent(), "next from the taskbar")
+        window.close()
+        self.assertTrue(thumbs.detached)
+
+    def test_skip_credits_for_a_film(self) -> None:
+        window = self.start()
+        self.engine.duration = 6_000_000
+        self.playing(window, play(credits_ms=5_400_000), at=5_000_000)
+        self.wait(0.4)
+        self.assertFalse(window.credits_shown)
+        self.engine.position = 5_500_000
+        self.pump(lambda: window.credits_shown, "Skip credits")
+        window.skip_credits()
+        self.pump(self.called("seek", 6_000_000 - 1_000), "to the end")
+        self.assertFalse(window.credits_shown)
+
+    def test_no_skip_credits_with_a_next_episode(self) -> None:
+        window = self.start()
+        self.engine.duration = 6_000_000
+        self.playing(window, play(credits_ms=5_400_000, next_label="S01E04"), at=5_500_000)
+        self.wait(0.4)
+        self.assertFalse(window.credits_shown)
+        self.assertTrue(window.countdown_shown)
+
+
 class FakePreview:
     """The seek bar's pictures: a grey picture per wish, the wishes kept."""
 
@@ -978,7 +1391,7 @@ class ClickAndDropTests(PlayerTestCase):
     def test_a_dropped_file_goes_to_the_app(self) -> None:
         drops = FakeDrops()
         window = self.start(drops=drops)
-        ids = {window.winfo_id(), window.overlay.winfo_id(), window.title_layer.winfo_id()}
+        ids = {window.winfo_id(), window.overlay.winfo_id()}
         self.assertEqual(set(drops.attached), ids)
         drops.attached[window.winfo_id()](["C:\\Downloads\\Holiday.mp4", "C:\\other.mkv"])
         self.pump(
@@ -1051,15 +1464,17 @@ class ControlTests(PlayerTestCase):
         window.seek_to_fraction(0.5)
         self.pump(self.called("seek", 1_800_000), "seek to the middle")
 
-    def test_stay_on_top_and_full_screen_buttons(self) -> None:
+    def test_stay_on_top_in_settings_and_the_full_screen_button(self) -> None:
         window = self.start()
         self.assertFalse(window.on_top)
-        window.on_top_button.invoke()
+        [on_top] = [e for e in window.more_menu_entries() if e.label == "Stay on top"]
+        assert on_top.action is not None
+        on_top.action()
         self.assertTrue(window.on_top)
         self.assertTrue(bool(window.attributes("-topmost")))
         window.full_screen_button.invoke()
         self.assertTrue(window.full_screen)
-        self.assertFalse(window.on_top_button.winfo_ismapped())  # window mode only
+        self.assertNotIn("Stay on top", window.more_menu_labels())  # window mode only
         window.full_screen_button.invoke()
         self.assertFalse(window.full_screen)
 
@@ -1206,7 +1621,8 @@ class SubtitleTests(PlayerTestCase):
 
     def test_a_long_subtitle_menu_opens_upwards_on_the_screen(self) -> None:
         window = self.start()
-        self.engine.subtitles = [Track(n, "eng", f"English {n}") for n in range(1, 13)]
+        # 11 tracks: with the menu's own lines (round 3 added Size) as tall as fits above it here
+        self.engine.subtitles = [Track(n, "eng", f"English {n}") for n in range(1, 12)]
         self.playing(window, at=1_000)
         self.pump(lambda: window.subtitle_tracks != (), "the tracks")
         window.update_idletasks()
@@ -1355,7 +1771,7 @@ class LifeTests(PlayerTestCase):
         self.root.update()
         self.assertEqual(window.winfo_width(), width)
         self.assertEqual(window.winfo_height(), height)
-        window.on_top_button.invoke()
+        window.toggle_on_top()
         window.geometry(f"{round(800 / scale)}x{round(450 / scale)}+120+80")
         self.root.update()
         window.close()
@@ -1465,7 +1881,7 @@ class MiniTests(PlayerTestCase):
 
     def test_leaving_mini_keeps_the_pin(self) -> None:
         window = self.start()
-        window.on_top_button.invoke()
+        window.toggle_on_top()
         self.ctrl_h(window)
         self.ctrl_h(window)
         self.assertTrue(bool(window.attributes("-topmost")))
@@ -1742,51 +2158,55 @@ class OverlayFollowsTests(PlayerTestCase):
     must not undo the move Tk still has to make (the controls stayed where full screen had
     put them after the mini player, full screen and back)."""
 
-    def test_the_video_fills_the_window_and_the_title_shows_it_through(self) -> None:
-        from app.media_player_window import OVERLAY_ALPHA, TITLE_ALPHA
+    def test_the_video_fills_the_window_and_the_bar_floats_over_it(self) -> None:
+        from app.media_player_window import BAR_INSET, OVERLAY_ALPHA
 
         window = self.start()
         window._win32 = True
         self.wait(0.3)
-        video, title = window.video, window.title_layer
+        video, overlay = window.video, window.overlay
         # No frame around the video.
         self.assertEqual(
             (video.winfo_rootx(), video.winfo_rooty(), video.winfo_width(), video.winfo_height()),
             (window.winfo_rootx(), window.winfo_rooty(), window.winfo_width(), window.winfo_height()),
         )
-        # The title band: its own layer over the video's top edge, more see-through.
-        self.assertEqual(title.state(), "normal")
-        self.assertEqual(
-            (title.winfo_rootx(), title.winfo_rooty(), title.winfo_width()),
-            (video.winfo_rootx(), video.winfo_rooty(), video.winfo_width()),
-        )
-        self.assertEqual(title.winfo_height(), window.top_band.winfo_reqheight())
-        self.assertAlmostEqual(float(tk.Toplevel.wm_attributes(title, "-alpha")), TITLE_ALPHA, 2)
-        self.assertAlmostEqual(
-            float(tk.Toplevel.wm_attributes(window.overlay, "-alpha")), OVERLAY_ALPHA, 2
-        )
-        self.assertLess(TITLE_ALPHA, OVERLAY_ALPHA)
-        # It goes with the controls, and stays away in the mini player.
+        self.assertAlmostEqual(float(tk.Toplevel.wm_attributes(overlay, "-alpha")), OVERLAY_ALPHA, 2)
+
+        def bar_floats() -> None:
+            self.root.update()
+            bar, pill, close = window.bottom_band, window.top_band, window.close_button
+            inset = round(BAR_INSET * ctk.ScalingTracker.get_widget_scaling(window))
+            left = bar.winfo_rootx() - video.winfo_rootx()
+            right = video.winfo_width() - left - bar.winfo_width()
+            self.assertLessEqual(abs(left - right), 2)  # centred
+            self.assertGreater(left, 0)  # the picture beside it
+            bottom = video.winfo_rooty() + video.winfo_height() - bar.winfo_rooty() - bar.winfo_height()
+            self.assertLessEqual(abs(bottom - inset), 2)
+            self.assertLessEqual(abs(pill.winfo_rootx() - video.winfo_rootx() - inset), 2)
+            self.assertLessEqual(abs(pill.winfo_rooty() - video.winfo_rooty() - inset), 2)
+            close_right = video.winfo_rootx() + video.winfo_width() - close.winfo_rootx()
+            self.assertLessEqual(abs(close_right - close.winfo_width() - inset), 2)
+
+        bar_floats()
+        # They go with the controls, and stay away in the mini player.
         self.engine.duration = 3_600_000
         self.playing(window, at=1_000)
         self.clock.now += 3.1
         window.refresh_controls()
         self.wait(0.1)
-        self.assertEqual(title.state(), "withdrawn")
+        self.assertFalse(window.top_band.winfo_ismapped())
         window.activity()
         self.wait(0.1)
-        self.assertEqual(title.state(), "normal")
+        self.assertTrue(window.top_band.winfo_ismapped())
         window.toggle_mini()
         self.wait(0.3)
-        self.assertEqual(title.state(), "withdrawn")
-        # Full screen: still on the video's top edge.
+        self.assertFalse(window.top_band.winfo_ismapped())
+        self.assertFalse(window.bottom_band.winfo_ismapped())
+        # Full screen: the same bar, wider.
         window.toggle_full_screen()
         self.wait(0.3)
-        self.assertEqual(title.state(), "normal")
-        self.assertEqual(
-            (title.winfo_rootx(), title.winfo_rooty(), title.winfo_width()),
-            (video.winfo_rootx(), video.winfo_rooty(), video.winfo_width()),
-        )
+        window.activity()
+        bar_floats()
 
     def test_after_mini_full_screen_and_back_the_overlay_is_on_the_video(self) -> None:
         window = self.start()

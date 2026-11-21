@@ -11,7 +11,11 @@ WIDTH_SHARE of the work area, 16:9, centred, at most MAX_HEIGHT_SHARE tall. The 
 dropped near, kept 16:9, never below MINI_LEAST; Ctrl+H (`is_mini_key`). VLC's sync and speed
 keys (round 2, item 20): G / H the subtitles, J / K the sound SYNC_STEP_MS earlier / later,
 [ / ] through SPEEDS, = back to 1×; N / P the next / previous episode, A Fit / Fill, Ctrl+W
-closes (`is_close_key`; Esc only leaves full screen or the mini player).
+closes (`is_close_key`; Esc only leaves full screen or the mini player). Round 3 (owner,
+2026-11-21, ideas from other players): D clearer voices (VOICE_BANDS), L a brighter picture
+(BRIGHTNESS), T the sleep timer (SLEEP_STEPS), PgUp / PgDn the chapters (`chapter_step`), ? or
+F1 the keys' list, the subtitles' size (SUBTITLE_SIZES) and height, a press held on the picture
+plays at HOLD_RATE.
 """
 
 from __future__ import annotations
@@ -205,6 +209,13 @@ _KEYS = {
     "n": "next",
     "p": "previous",
     "a": "aspect",
+    "d": "voices",
+    "l": "brighter",
+    "t": "sleep",
+    "Prior": "previous_chapter",  # Page Up
+    "Next": "next_chapter",  # Page Down
+    "question": "shortcuts",
+    "F1": "shortcuts",
 }
 KEYS: Mapping[str, str] = MappingProxyType(
     _KEYS | {keysym.upper(): action for keysym, action in _KEYS.items() if len(keysym) == 1}
@@ -318,3 +329,102 @@ def is_mini_key(keysym: str, state: int) -> bool:
 def is_close_key(keysym: str, state: int) -> bool:
     """Ctrl+W: closes the player (Esc doesn't, as in VLC)."""
     return bool(state & _CONTROL) and keysym in ("w", "W")
+
+
+# -- round 3: sound, picture, sleep timer, chapters ----------------------------------------------
+
+# Clearer voices (D): libVLC's 10-band equalizer (60, 170, 310, 600 Hz, 1, 3, 6, 12, 14, 16 kHz)
+# with the rumble and booms down and the voices' range up, in dB; instant, for every video.
+VOICE_BANDS = (-9.0, -7.0, -3.0, 1.0, 4.0, 5.0, 3.0, 0.0, -1.0, -2.0)
+VOICE_PREAMP = 2.0
+# Brighter picture (L): off, brighter, brightest as libVLC's adjust filter's (brightness, gamma);
+# the gamma lifts the dark parts most, the brightness also works with a graphics card's decoding.
+BRIGHTNESS = ((1.0, 1.0), (1.08, 1.35), (1.16, 1.7))
+# The subtitles' size (sub-text-scale, %): small, normal, large, extra large; raised: this many
+# pixels higher than libVLC's own place (sub-margin).
+SUBTITLE_SIZES = (75, 100, 130, 165)
+NORMAL_SIZE = 1
+RAISED_MARGIN = 120
+# The sleep timer (T steps through, the More menu chooses): minutes of playing, or SLEEP_END:
+# the end of this video. In its last SLEEP_FADE_S the sound fades, then the video pauses.
+SLEEP_END = -1
+SLEEP_STEPS = (0, 15, 30, 45, 60, 90, SLEEP_END)  # 0: off
+SLEEP_FADE_S = 15.0
+# A press held still on the picture this long plays at HOLD_RATE until it is let go.
+HOLD_MS = 450
+HOLD_RATE = 2.0
+CHAPTER_BACK_MS = 3_000  # PgUp this far into a chapter: its start again, else the one before
+
+
+# Round 4 (owner, 2026-11-21): the sound up to VOLUME_MAX (libVLC amplifies above 100).
+VOLUME_MAX = 150
+
+
+def ends_at(now_s: float, position_ms: int, duration_ms: int, rate: float) -> float | None:
+    """When the video ends (seconds since the epoch, as `now_s`) at this speed; None while its
+    length is unknown."""
+    if duration_ms <= 0:
+        return None
+    left_s = max(0, duration_ms - position_ms) / 1000 / (rate if rate > 0 else 1.0)
+    return now_s + left_s
+
+
+def credits_button(
+    position_ms: int, duration_ms: int, credits_ms: int | None, has_next: bool
+) -> bool:
+    """Skip credits shows from Plex's credits marker on, for a video no next episode follows
+    (a film, a show's last episode: those have the countdown instead)."""
+    if has_next or credits_ms is None or duration_ms <= 0:
+        return False
+    return credits_ms <= position_ms < duration_ms - 2_000 and credits_ms < duration_ms
+
+
+def device_gone(previous: str | None, current: str | None, previous_active: bool) -> bool:
+    """Windows' default sound output changed because the one before went away (Bluetooth
+    headphones off, a cable out), not because another was picked or plugged in."""
+    return previous is not None and current != previous and not previous_active
+
+
+def next_sleep(current: int) -> int:
+    """T: the sleep timer's next step after `current` (SLEEP_STEPS; one not in it: off)."""
+    if current not in SLEEP_STEPS:
+        return SLEEP_STEPS[0]
+    return SLEEP_STEPS[(SLEEP_STEPS.index(current) + 1) % len(SLEEP_STEPS)]
+
+
+def faded_volume(volume: int, left_s: float) -> int:
+    """The sound in the sleep timer's last SLEEP_FADE_S: down to 0 as `left_s` reaches 0."""
+    if left_s >= SLEEP_FADE_S:
+        return volume
+    return max(0, round(volume * max(0.0, left_s) / SLEEP_FADE_S))
+
+
+Chapter = tuple[int, str]  # (start, ms; its name: "" when the file gives none)
+
+
+def chapter_index(chapters: Sequence[Chapter], ms: int) -> int | None:
+    """The chapter `ms` is in (None without chapters, or before the first)."""
+    found = None
+    for index, (start, _name) in enumerate(chapters):
+        if start <= ms:
+            found = index
+        else:
+            break
+    return found
+
+
+def chapter_step(chapters: Sequence[Chapter], ms: int, step: int) -> int | None:
+    """PgDn (`step` 1): the next chapter's start; PgUp (-1): this chapter's start once past its
+    first CHAPTER_BACK_MS, else the one before's. None: no chapter that way."""
+    if not chapters:
+        return None
+    index = chapter_index(chapters, ms)
+    if step > 0:
+        following = 0 if index is None else index + 1
+        return chapters[following][0] if following < len(chapters) else None
+    if index is None:
+        return None
+    start = chapters[index][0]
+    if ms - start >= CHAPTER_BACK_MS or index == 0:
+        return start
+    return chapters[index - 1][0]

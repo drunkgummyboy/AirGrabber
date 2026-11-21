@@ -19,6 +19,7 @@ from app.media_protocol import (
     Ready,
     Stopped,
     Tracks,
+    WantEpisode,
     WantNext,
     WantPrevious,
     decode,
@@ -49,6 +50,13 @@ ALL: tuple[Message, ...] = (
     _play(intro=None, credits_ms=None, next_label=None, ask_resume=False),
     _play(find_subtitles=False),  # a file from Explorer: no Find subtitles
     _play(previous_label="S01E02"),  # an episode with one before it (⏮, P)
+    _play(  # the Episodes panel's list (round 4)
+        episodes=("S01E01 · Pilot", "S01E02"),
+        episode_seasons=(1, 1),
+        episodes_watched=(True, False),
+        episode_index=1,
+    ),
+    WantEpisode(index=3),
     LoadSubtitle(path="C:\\Films\\Dune.nl.srt"),
     Notice(text="Subtitles not found"),
     Ready(),
@@ -160,6 +168,11 @@ class DecodeRefusesTests(unittest.TestCase):
             ("credits_ms", "end"),
             ("next_label", 4),
             ("previous_label", 4),
+            ("episodes", "S01E01"),
+            ("episodes", [1]),
+            ("episode_seasons", ["1"]),
+            ("episodes_watched", [1]),
+            ("episode_index", None),
             ("always_audio", None),
             ("carry_subtitles", []),
         ):
@@ -199,6 +212,10 @@ class SecurityTests(unittest.TestCase):
                 "carry_subtitles",
                 "find_subtitles",
                 "previous_label",
+                "episodes",  # the Episodes panel: labels, seasons, watched marks, a place
+                "episode_seasons",
+                "episodes_watched",
+                "episode_index",
             ],
         )
         for name in names:

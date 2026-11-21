@@ -20,6 +20,14 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.28.0": (
+        N_("Player: Clearer voices (D), a brighter picture (L) and a sleep timer (T)."),
+        N_("Player: media keys work, the taskbar preview has ⏮ ⏯ ⏭, and ? shows all the keys."),
+        N_("Player: it pauses when the PC locks or your headset is unplugged."),
+        N_("Player: chapters on the timeline (Page Up / Page Down), the time it ends, and the subtitle size."),
+        N_("Player: hold the mouse on the picture for 2× speed, volume up to 150%, and Skip credits for films."),
+        N_("Torrents that Download Station called invalid are now sent as a magnet link."),
+    ),
     "3.27.0": (
         N_("▶ Play and casting to a TV find Plex's films and episodes on your NAS by themselves, even without a folder set."),
         N_("A show's window has a ▶ on each episode, and its ▶ Play starts the next unwatched episode straight away."),
@@ -321,15 +329,15 @@ class Feature(NamedTuple):
 
 # Version -> its big features, at most 3.
 FEATURES: dict[str, tuple[Feature, ...]] = {
-    "3.23.0": (
+    "3.28.0": (
         Feature(
-            N_("AirGrabber on your phone"),
+            N_("The player's new look"),
             N_(
-                "The Companion app for Android brings your library to your phone: browse it and "
-                "watch there, search for something new to download, and copy films onto the "
-                "phone for later. Switch it on in Settings → Phone connection."
+                "One floating control bar, with the title in a small pill, so you see more of "
+                "the picture. The episode list, the sleep timer and the settings are in that "
+                "bar too."
             ),
-            "phone.png",
+            "player.png",
         ),
     ),
 }

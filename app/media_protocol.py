@@ -12,7 +12,8 @@ translated). Player → app: `Ready`, `Position` (while playing), `Stopped` (clo
 (P or ⏮: the episode before), `FindSubtitles`, `Tracks` (the
 languages picked by hand, for the next episode: "" none, "off"), `AlwaysPick` (the viewer chose
 Always pick in a track menu: the app stores it in Settings), `OpenFile` (a file dropped from
-Explorer on the player: the app plays it as one from "Open with", or says it isn't a video).
+Explorer on the player: the app plays it as one from "Open with", or says it isn't a video),
+`WantEpisode` (one picked in the player's Episodes panel: its index in the Play's list).
 
 Nothing secret travels here: `Play` has a local file and texts, never a token or a URL.
 """
@@ -37,7 +38,10 @@ class Play:
     hand in the episode before ("" none). `find_subtitles`: whether the Subtitles menu offers
     Find subtitles (not for a file from Explorer's "Open with"; a line without it: True).
     `previous_label` the episode before ("S01E02"; None: none, or a line from before). With
-    either label the window shows ⏮ / ⏭ and takes N / P.
+    either label the window shows ⏮ / ⏭ and takes N / P. `episodes`: the show's episodes in
+    order ("S01E03 · Name"; empty for a film or a file), each one's season (0: a special) and
+    whether it was watched, `episode_index` this one's place among them (-1: not there): the
+    player's Episodes panel (round 4).
     """
 
     file: str
@@ -54,6 +58,10 @@ class Play:
     carry_subtitles: str
     find_subtitles: bool = True
     previous_label: str | None = None
+    episodes: tuple[str, ...] = ()
+    episode_seasons: tuple[int, ...] = ()
+    episodes_watched: tuple[bool, ...] = ()
+    episode_index: int = -1
 
 
 @dataclass(frozen=True)
@@ -108,6 +116,13 @@ class WantPrevious:
 
 
 @dataclass(frozen=True)
+class WantEpisode:
+    """Episode `index` of the Play's `episodes`, please (picked in the Episodes panel)."""
+
+    index: int
+
+
+@dataclass(frozen=True)
 class FindSubtitles:
     language: str
 
@@ -143,6 +158,7 @@ Message: TypeAlias = (
     | Ended
     | WantNext
     | WantPrevious
+    | WantEpisode
     | FindSubtitles
     | Tracks
     | AlwaysPick
@@ -159,6 +175,7 @@ TYPES: Mapping[type[Any], str] = {
     Ended: "ended",
     WantNext: "want_next",
     WantPrevious: "want_previous",
+    WantEpisode: "want_episode",
     FindSubtitles: "find_subtitles",
     Tracks: "tracks",
     AlwaysPick: "always_pick",
@@ -229,6 +246,15 @@ def _kind(value: object) -> Literal["audio", "subtitles"]:
     raise _Wrong
 
 
+def _many[T](read: Callable[[object], T]) -> Callable[[object], tuple[T, ...]]:
+    def many(value: object) -> tuple[T, ...]:
+        if not isinstance(value, list):
+            raise _Wrong
+        return tuple(read(item) for item in value)
+
+    return many
+
+
 _Reader = Callable[[object], object]
 
 # How each field is read, by its annotation (a message with another kind of field fails at import).
@@ -239,6 +265,9 @@ _READERS: Mapping[str, _Reader] = {
     "int | None": _optional_int,
     "str | None": _optional_str,
     "tuple[int, int] | None": _span,
+    "tuple[str, ...]": _many(_str),
+    "tuple[int, ...]": _many(_int),
+    "tuple[bool, ...]": _many(_bool),
     "Literal['playing', 'paused']": _state,
     "Literal['audio', 'subtitles']": _kind,
 }

@@ -887,6 +887,82 @@ def draw_phone() -> Image.Image:
     return layer.image
 
 
+def draw_floating_bar() -> Image.Image:
+    """The player's new look: a film filling the window edge to edge (a sunset over hills), the
+    title in a small pill at the top left, a round ✕ at the top right, and one rounded control
+    bar floating over the film's bottom: pause and the jumps, the seek line, then the episode
+    list, the sleep timer (a moon) and the settings (a gear)."""
+    layer = _background()
+    layer.paint(glow(STEEL, (0.5, 0.45), 0.55, 0.36))
+    layer.paint(glow("#e58a5f", (0.5, 0.35), 0.3, 0.18))
+
+    # The window: the film fills it, no bands.
+    box: Box = (96, 14, 528, 212)
+    film = Layer()
+    film.rect(*box, 0, down(box, ((0, "#e58a5f", 1), (0.55, "#7a5a86", 1), (1, "#2c3d5c", 1))))
+    film.paint(solid("#ffe2b0"), Mask().add(circle(360, 92, 28)).done())
+    film.paint(
+        solid("#46396a"),
+        Mask()
+        .add(((96, 132), (200, 88), (290, 126), (380, 80), (480, 120), (624, 76), (624, 226), (96, 226)))
+        .done(),
+    )
+    film.paint(
+        solid("#2a2748"),
+        Mask()
+        .add(((96, 170), (230, 124), (340, 158), (460, 118), (624, 152), (624, 226), (96, 226)))
+        .done(),
+    )
+    layer.over(film, clip=rect_mask(*box, 14))
+    layer.paint(solid("#5f7d9b"), border_mask(*box, 14, 1.5))
+
+    # The title pill and the round close button.
+    layer.rect(110, 26, 132, 26, 13, "#101418", opacity=0.72)
+    layer.rect(122, 33, 70, 6, 3, WHITE)
+    layer.rect(122, 42, 44, 4, 2, MUTED)
+    layer.paint(solid("#101418", 0.72), Mask().add(circle(597, 39, 13)).done())
+    layer.paint(
+        solid(ON_ACCENT),
+        Mask()
+        .line(((592, 34), (602, 44)), 2, round_ends=True)
+        .line(((602, 34), (592, 44)), 2, round_ends=True)
+        .done(),
+    )
+
+    # The floating bar.
+    bar: Box = (136, 170, 448, 42)
+    layer.rect(*bar, 21, "#101418", opacity=0.8)
+    layer.paint(solid("#ffffff", 0.12), border_mask(*bar, 21, 1))
+    _jump(layer, 164, 193, clockwise=False)
+    layer.rect(182, 184, 5, 17, 1.5, WHITE)
+    layer.rect(192, 184, 5, 17, 1.5, WHITE)
+    _jump(layer, 218, 193, clockwise=True)
+    layer.rect(240, 190, 24, 4, 2, MUTED)
+    layer.rect(272, 190.5, 196, 3.5, 1.75, MUTED, opacity=0.4)
+    layer.rect(272, 190.5, 84, 3.5, 1.75, STEEL)
+    layer.paint(solid(WHITE), Mask().add(circle(356, 192.25, 5.5)).done())
+    layer.rect(476, 190, 24, 4, 2, MUTED)
+    # The episode list: three lines.
+    for row in range(3):
+        layer.rect(514, 185 + row * 6, 14, 2.5, 1.25, ON_ACCENT)
+    # The sleep timer: a crescent moon.
+    moon = Mask().add(circle(545, 191, 7.5)).done()
+    bite = Mask().add(circle(549, 187.5, 6.5)).done()
+    layer.paint(solid(ON_ACCENT), ImageChops.subtract(moon, bite))
+    # The settings: a gear (a ring with teeth).
+    gear = Mask()
+    for tooth in range(8):
+        angle = math.radians(tooth * 45)
+        gear.line(
+            ((571 + 5 * math.cos(angle), 191 + 5 * math.sin(angle)), (571 + 8.5 * math.cos(angle), 191 + 8.5 * math.sin(angle))),
+            3,
+        )
+    gear.add(circle(571, 191, 6))
+    hole = Mask().add(circle(571, 191, 2.6)).done()
+    layer.paint(solid(ON_ACCENT), ImageChops.subtract(gear.done(), hole))
+    return layer.image
+
+
 def round_top_corners(image: Image.Image) -> Image.Image:
     """The top corners transparent: the card's own corners show there."""
     big = Image.new("L", (WIDTH * SUPERSAMPLE, HEIGHT * SUPERSAMPLE), 0)
@@ -904,7 +980,7 @@ def round_top_corners(image: Image.Image) -> Image.Image:
 
 # File name in app/assets/whats_new -> its drawing.
 PICTURES: dict[str, Callable[[], Image.Image]] = {
-    "phone.png": draw_phone,
+    "player.png": draw_floating_bar,
 }
 
 
