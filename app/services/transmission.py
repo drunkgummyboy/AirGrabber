@@ -20,6 +20,10 @@ original ones, which Transmission 4.1's JSON-RPC 2.0 still accepts):
   `total_size`;
 - the page's ⋯ menu: `torrent-stop`, `torrent-start` and `torrent-remove` with `ids` = the
   hashes, the last with `delete-local-data: false` (the files stay, finished or not).
+- the magnet guard (app/services/program_guard.py): `torrent-get` with `ids` = the hash and
+  `fields` hashString, files, metadataPercentComplete (`files`: each file's `name`, its path
+  inside the torrent; none until a magnet's metadata is complete); `torrent-remove` with
+  `delete-local-data: true` (`remove_with_files`: everything it downloaded goes too).
 
 Secret hygiene as in remote.py: the password only travels in the Authorization header. The
 status calls keep the session id Transmission handed out (in memory, per address), so they
@@ -44,6 +48,7 @@ from app.services.remote import (
     HttpClients,
     ReleaseRefused,
     RemoteError,
+    base_name,
     byte_count,
     clamp_progress,
     destination,
@@ -147,6 +152,39 @@ class TransmissionClient:
         """Remove these torrents with `delete-local-data: false`: everything they downloaded,
         finished or not, stays on the disk. An unknown hash is no error."""
         await self._act("torrent-remove", task_ids, {"delete-local-data": False})
+
+    async def file_names(self, task: RemoteTask) -> tuple[str, ...] | None:
+        """The torrent's files (`torrent-get` `files` for its hash); None while a magnet's
+        metadata isn't complete, or when Transmission doesn't have it."""
+        task_id = task.task_id or task.info_hash
+        if not task_id:
+            return None
+        arguments = {
+            "ids": [task_id.lower()],
+            "fields": ["hashString", "files", "metadataPercentComplete"],
+        }
+        async with self._session(keep_id=True, timeout=STATUS_TIMEOUT) as session:
+            answer = await session.call("torrent-get", arguments)
+        torrents = answer.get("torrents")
+        if not isinstance(torrents, list):
+            raise RemoteError(session.unexpected())
+        for raw in torrents:
+            if not isinstance(raw, dict):
+                continue
+            metadata = number(_field(raw, "metadataPercentComplete", "metadata_percent_complete"))
+            files = raw.get("files")
+            if (metadata is not None and metadata < 1.0) or not isinstance(files, list):
+                return None
+            names = (item.get("name") for item in files if isinstance(item, dict))
+            found = tuple(base_name(name) for name in names if isinstance(name, str) and name)
+            return found or None
+        return None
+
+    async def remove_with_files(self, task_ids: Collection[str]) -> bool:
+        """Remove these torrents with `delete-local-data: true`: what they downloaded,
+        finished or not, is deleted too."""
+        await self._act("torrent-remove", task_ids, {"delete-local-data": True})
+        return True
 
     async def _act(
         self, method: str, task_ids: Collection[str], arguments: Mapping[str, object]

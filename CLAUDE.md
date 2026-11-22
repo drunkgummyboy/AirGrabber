@@ -132,6 +132,13 @@ Python 3.13 desktop app: customtkinter 6 + async-tkinter-loop, aiosqlite, httpx,
 - A .torrent holding a program (`.exe` and the like) never leaves `DownloadService._obtain`
   (`app/services/torrent_files.py`, `ProgramInTorrent`): malware dressed up as a video. Magnets can't be read first,
   so a release caught once is remembered by its info hash (`Settings.refused_hashes`) and never sent again.
+  Magnets sent to the remote program (REMOTE's, FOLDER's fallback) are watched by `app/services/program_guard.py`
+  (`DownloadService.subscribe_magnets`, spawned from `MainWindow._start`; 2 s for 2 min, 10 s to 30 min, 60 s to 24 h;
+  the last 24 h's grabs picked up after a restart). When the task's file list (`RemoteTaskFiles.file_names`) holds a
+  program (`torrent_files.program_suffix`), it removes the task with its files (`remove_with_files`; Download Station
+  keeps a finished file and the notice says so), adds the hash to `refused_hashes`, takes the grab out of the history
+  (`HistoryRepository.forget`) and tells the user; the main window then fetches it again without that release. Logs
+  give the release title only, never a hash, link, task or file name.
 - qBittorrent's settings file (`%APPDATA%\qBittorrent\qBittorrent.ini`) is changed only by
   `app/services/qbittorrent_setup.py`: just the "Add new torrent" dialog keys (and its look's and
   Web UI's keys, below), only while qBittorrent isn't running, the original backed up once; never

@@ -45,16 +45,18 @@ from urllib.parse import urlsplit
 from app.config import AppPaths
 from app.database import Database
 from app.i18n import N_, t
-from app.models import DownloadMode, RemoteKind, RemoteStatus, Settings
+from app.models import DownloadMode, RemoteKind, RemoteStatus, RemoteTask, Settings
 from app.models import QBittorrentSetupResult as SetupResult
 from app.services.qbittorrent_setup import QBittorrentSetup, qbittorrent_running
 from app.services.qbittorrent_webui import ADDRESS, USERNAME, WebUiLogin, WebUiResult
 from app.services.remote import (
     DiskSpace,
+    FilesUnknown,
     RemoteClient,
     RemoteError,
     RemoteStatusClient,
     RemoteTaskActions,
+    RemoteTaskFiles,
 )
 from app.services.settings import SettingsService
 
@@ -345,8 +347,8 @@ class QBittorrentStarter:
 
 class LocalQBittorrent:
     """The qBittorrent client for AirGrabber's qBittorrent on this PC (RemoteClient, with the
-    Downloads page's status calls): when a call can't reach it, `starter` starts qBittorrent and
-    the call is tried once more."""
+    Downloads page's status calls and the magnet guard's file calls): when a call can't reach
+    it, `starter` starts qBittorrent and the call is tried once more."""
 
     def __init__(self, client: RemoteClient, starter: QBittorrentStarter, port: int) -> None:
         self._client = client
@@ -380,6 +382,23 @@ class LocalQBittorrent:
 
     async def remove(self, task_ids: Collection[str]) -> None:
         await self._again(lambda: self._actions_client().remove(task_ids))
+
+    async def file_names(self, task: RemoteTask) -> tuple[str, ...] | None:
+        return await self._again(lambda: self._files_client().file_names(task))
+
+    async def remove_with_files(self, task_ids: Collection[str]) -> bool:
+        return await self._again(lambda: self._files_client().remove_with_files(task_ids))
+
+    def _files_client(self) -> RemoteTaskFiles:
+        client = self._client
+        if not isinstance(client, RemoteTaskFiles):
+            raise FilesUnknown(
+                t(
+                    "AirGrabber can't read the files of {program}'s downloads.",
+                    program=client.kind.program,
+                )
+            )
+        return client
 
     def _actions_client(self) -> RemoteTaskActions:
         client = self._client

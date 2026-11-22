@@ -69,6 +69,7 @@ from app.services.library_source import folders_on, library_source
 from app.services.plex import plex_connected
 from app.services.download_queue import QueuedDownload
 from app.services.profiles import ProfileChange
+from app.services.program_guard import CaughtProgram, caught_notice
 from app.services.stuck_downloads import StuckWatch
 from app.services.missing import MAX_PER_RUN
 from app.services.auto_download import GIVE_UP_AFTER
@@ -143,6 +144,7 @@ log = logging.getLogger(__name__)
 _UPDATE_CHECK_DELAY_S = 5  # let the pages load first
 STUCK_SWAP_TEXT = N_("{title} stopped moving: AirGrabber is fetching another release")
 IMDB_TITLE_URL = "https://www.imdb.com/title/{}/"
+_CAUGHT_STATUS_MS = 60_000  # a download removed for holding a program: its line stays a minute
 _DOWNLOAD_STATUS_MS = 10_000  # how long a one-click download's result stays in the status bar
 _DETAILS_WAIT_S = 5.0  # a one-click movie download waits this long for TMDB details (IMDb id)
 _UPDATE_STATUS_MS = 10_000  # how long "… is ready" / "Updated to …" stay in the status bar
@@ -617,6 +619,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         # Downloads that stopped moving: swapped for the next best release.
         self._stuck = StuckWatch()
         self._unsubscribe_stuck = services.download_status.subscribe(self._swap_stuck)
+        # A magnet's download that held a program, removed by the magnet guard: told, and
+        # downloaded again without that release.
+        self._unsubscribe_caught = services.program_guard.subscribe(self._on_program_caught)
         # The automatic downloads: a tray notification (or the status bar) per event.
         self._auto_throttle = AutoNoticeThrottle()
         self._unsubscribe_auto = services.auto_download.subscribe(self._on_auto_event)
@@ -727,6 +732,7 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._unsubscribe_folder_library()
         self._unsubscribe_tray()
         self._unsubscribe_stuck()
+        self._unsubscribe_caught()
         self._unsubscribe_auto()
         self._unsubscribe_backup()
         self._unsubscribe_profiles()
@@ -1022,6 +1028,17 @@ class MainWindow(AsyncCTk, ctk.CTk):
         self._report(t(STUCK_SWAP_TEXT, title=entry.title), _DOWNLOAD_STATUS_MS)
         self._download_entry_again(entry, True, avoid=avoid)
 
+    def _on_program_caught(self, caught: CaughtProgram) -> None:
+        """A magnet's download held a program and was removed from the torrent program (app/
+        services/program_guard.py): a tray notification and the status bar say so, and it is
+        downloaded again, the releases fetched for it before left out (as `_swap`)."""
+        notice = caught_notice(caught)
+        if self.tray.running:
+            self.tray.notify(notice.title, notice.body)
+        self._report(notice.status, _CAUGHT_STATUS_MS)
+        if caught.entry is not None:
+            self._download_entry_again(caught.entry, True, avoid=caught.avoid)
+
     def _tray_downloads_changed(self, overview: DownloadsOverview) -> None:
         self._tray_downloads = downloads_line(overview)
         self._show_tray_lines()
@@ -1208,6 +1225,9 @@ class MainWindow(AsyncCTk, ctk.CTk):
         spawn(self._services.phone.run(), name="phone")  # does nothing while off, or without its marker
         # The Downloads page's progress and the header badge (they listen to it themselves).
         spawn(self._services.download_status.run_periodic(), name="download-status")
+        # Magnets sent to the torrent program, watched until their files are known (those of
+        # the last 24 hours picked up again first).
+        spawn(self._services.program_guard.run(), name="program-guard")
         spawn(self._services.images.prune(), name="poster-prune")
         # The video tools (ffmpeg, yt-dlp) when this copy lacks them (an update from before):
         # fetched once in the background, tried again later on a failure; nothing when there.

@@ -113,10 +113,16 @@ def _suffix(name: str) -> str:
     return stripped[dot:] if dot >= 0 else ""
 
 
+def program_suffix(name: str) -> str | None:
+    """The suffix of `name` when it is a program's (".exe"), else None. Also the magnet guard's
+    rule for the file names a torrent program lists (app/services/program_guard.py)."""
+    suffix = _suffix(name)
+    return suffix if suffix in PROGRAM_SUFFIXES else None
+
+
 def program_inside(content: bytes) -> str | None:
     """The suffix of a program among a .torrent's files (".exe"), or None."""
     for name in file_names(content):
-        suffix = _suffix(name)
-        if suffix in PROGRAM_SUFFIXES:
+        if (suffix := program_suffix(name)) is not None:
             return suffix
     return None

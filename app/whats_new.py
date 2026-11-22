@@ -20,6 +20,11 @@ from app.i18n import N_, t
 
 # Version -> its notes, one line each.
 NOTES: dict[str, tuple[str, ...]] = {
+    "3.28.1": (
+        N_("Magnet downloads are now watched while they run, also on your NAS's torrent program."),
+        N_("One that turns out to hold a program is removed with its files, and that release is never used again."),
+        N_("AirGrabber then tells you, and fetches the episode or film again from another release."),
+    ),
     "3.28.0": (
         N_("Player: Clearer voices (D), a brighter picture (L) and a sleep timer (T)."),
         N_("Player: media keys work, the taskbar preview has ⏮ ⏯ ⏭, and ? shows all the keys."),

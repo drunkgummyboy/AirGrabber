@@ -51,6 +51,7 @@ from app.services.phone.shortlist import Shortlist
 from app.services.phone.suggestions import Suggestions
 from app.services.local_files import PLACES_FILE, LocalPlaces
 from app.services.problem_report import ProblemReports
+from app.services.program_guard import ProgramGuard
 from app.services.playback import (
     PlaybackService,
     TMDBEpisodeNames,
@@ -125,6 +126,7 @@ class Services:
         "phone_sends",
         "plex",
         "profiles",
+        "program_guard",
         "prowlarr_setup",
         "quick_download",
         "remote",
@@ -218,6 +220,13 @@ class Services:
             known=functools.partial(_known_titles, db),
         )
         downloads.subscribe(self.download_status.after_grab)
+        # The magnet guard: every magnet sent to the torrent program is watched until its files
+        # are known; one holding a program is removed and refused (`run` from the UI, which
+        # also tells the user and downloads it again: `subscribe`).
+        self.program_guard = ProgramGuard(
+            remote, settings, db.history, downloads, show=db.library.get_show
+        )
+        downloads.subscribe_magnets(self.program_guard.watch)
         # MediaForge inside AirGrabber: off until something awaits `forge.start()` (the delayed
         # start after the main window shows, or MediaForge's page opened earlier).
         self.forge = forge

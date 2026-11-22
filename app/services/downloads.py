@@ -16,6 +16,10 @@ Films may have a place of their own: `movie_download_dir` (FOLDER) and `movie_re
 (the remote program, REMOTE and FOLDER's magnets); empty = the same place as everything else.
 `GrabTarget.media_type` tells a film from an episode. APP mode has no place to choose.
 
+A magnet can't be looked into before it starts: every magnet sent to the remote program is
+handed to the `subscribe_magnets` listeners by its info hash (the magnet guard, app/services/
+program_guard.py, watches the program until the task's files are known).
+
 Direct download links may embed an indexer/Prowlarr API key: they are never logged or shown,
 and neither are magnet links.
 """
@@ -50,7 +54,7 @@ from app.models import (
     TorrentApp,
     TorrentRelease,
 )
-from app.services.remote import ReleaseRefused
+from app.services.remote import ReleaseRefused, magnet_hash
 from app.services.remote_downloads import RemoteDownloads
 from app.services.settings import SettingsService
 from app.services.torrent_app import find_torrent_app
@@ -61,6 +65,7 @@ log = logging.getLogger(__name__)
 
 DownloadListener = Callable[[], None]
 GrabListener = Callable[[GrabTarget], None]
+MagnetListener = Callable[[str], None]  # the info hash of a magnet sent to the remote program
 Opener = Callable[[str], None]  # opens a file path or magnet link with its Windows handler
 
 ITORRENTS_URL = "https://itorrents.org/torrent/{}.torrent"  # hash in UPPERCASE hex
@@ -129,7 +134,11 @@ class ProgramInTorrent(ReleaseError):
     """A release's .torrent holds a program (app/services/torrent_files.py): malware dressed up as
     a video. It is never handed on; a one-click download tries the next best release. Its info
     hash is remembered (`Settings.refused_hashes`), so it is refused again later even when its
-    .torrent can't be fetched and only its magnet (which can't be looked into) is at hand."""
+    .torrent can't be fetched and only its magnet (which can't be looked into) is at hand.
+
+    A magnet that went out (no .torrent to be had) is checked afterwards instead: the magnet
+    guard (app/services/program_guard.py) watches the remote program until the task's files are
+    known and removes a task that holds a program, its hash remembered here the same way."""
 
 
 class DownloadService:
@@ -153,6 +162,7 @@ class DownloadService:
         self._opener: Opener = opener or open_with_default_program
         self._listeners: list[DownloadListener] = []
         self._grab_listeners: list[GrabListener] = []
+        self._magnet_listeners: list[MagnetListener] = []
 
     def subscribe(self, listener: DownloadListener) -> Callable[[], None]:
         """Call `listener` after every successful grab. Returns a function that unsubscribes it."""
@@ -178,6 +188,22 @@ class DownloadService:
             if subscribed:
                 subscribed = False
                 self._grab_listeners.remove(listener)
+
+        return unsubscribe
+
+    def subscribe_magnets(self, listener: MagnetListener) -> Callable[[], None]:
+        """Call `listener` with the info hash of every magnet sent to the remote program (REMOTE
+        mode's magnets, FOLDER mode's magnet fallback), once the grab is in the history; never
+        for a .torrent (looked into before it went) or APP mode. Returns a function that
+        unsubscribes it."""
+        self._magnet_listeners.append(listener)
+        subscribed = True
+
+        def unsubscribe() -> None:
+            nonlocal subscribed
+            if subscribed:
+                subscribed = False
+                self._magnet_listeners.remove(listener)
 
         return unsubscribe
 
@@ -216,12 +242,17 @@ class DownloadService:
         """
         mode = self._settings.current.download_mode
         movie = target.media_type is MediaType.MOVIE  # to the films folder, when there is one
+        magnet_sent = False  # a magnet went to the remote program: the guard watches it
         if mode is DownloadMode.APP:
             result, saved_path, info_hash = await self._grab_in_app(release)
         elif mode is DownloadMode.REMOTE:
-            result, saved_path, info_hash = await self._grab_remote(release, movie=movie)
+            result, saved_path, info_hash, magnet_sent = await self._grab_remote(
+                release, movie=movie
+            )
         else:
-            result, saved_path, info_hash = await self._grab_to_folder(release, movie=movie)
+            result, saved_path, info_hash, magnet_sent = await self._grab_to_folder(
+                release, movie=movie
+            )
 
         record = DownloadRecord(
             media_type=target.media_type,
@@ -238,6 +269,12 @@ class DownloadService:
             await self._history.add(record)
         except Exception:
             log.exception("Could not record the grab of %r in the download history", release.title)
+        if magnet_sent and info_hash:
+            for magnet_listener in list(self._magnet_listeners):
+                try:
+                    magnet_listener(info_hash)
+                except Exception:
+                    log.exception("Magnet listener %r failed", magnet_listener)
         await self.learn_groups()
         self._notify(target)
         return result
@@ -303,12 +340,13 @@ class DownloadService:
 
     async def _grab_remote(
         self, release: TorrentRelease, *, movie: bool
-    ) -> tuple[GrabResult, str, str | None]:
+    ) -> tuple[GrabResult, str, str | None, bool]:
         """Send the .torrent (direct link, then itorrents.org) or else a magnet (the release's
         own, a Prowlarr redirect, or one built from the hash) to the remote torrent program; a
         film (`movie`) to its films destination when Settings has one.
 
-        Returns (result, history saved_path = the program's name, info hash).
+        Returns (result, history saved_path = the program's name, info hash, whether a magnet
+        went: the info hash then always set, from the magnet when the release had none).
         """
         if not self._remote.configured:
             raise GrabError(_remote_not_set_up(self._remote.kind))  # before any download
@@ -317,6 +355,7 @@ class DownloadService:
         content, magnet, info_hash = await self._obtain(
             release, _magnet_or_none(release.magnet_uri)
         )
+        magnet_sent = False
         if content is not None:
             await client.add_torrent(
                 content, f"{safe_filename(release.title)}.torrent", movie=movie
@@ -329,8 +368,10 @@ class DownloadService:
                 raise ReleaseError(t(NO_LINK))
             await client.add_magnet(magnet, movie=movie)
             log.info("Grabbed %r: magnet sent to %s", release.title, name)
+            info_hash = info_hash or magnet_hash(magnet)
+            magnet_sent = info_hash is not None
         sent = GrabResult(outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=name))
-        return sent, name, info_hash
+        return sent, name, info_hash, magnet_sent
 
     async def _obtain(
         self, release: TorrentRelease, magnet: str | None
@@ -363,7 +404,7 @@ class DownloadService:
         if content is not None and (suffix := program_inside(content)) is not None:
             log.warning("Refused %r: its torrent holds a %s file", release.title, suffix)
             if info_hash:
-                await self._remember_refused(info_hash)
+                await self.remember_refused(info_hash)
             raise ProgramInTorrent(t(PROGRAM_IN_TORRENT, suffix=suffix))
         return content, magnet, info_hash
 
@@ -375,9 +416,10 @@ class DownloadService:
             log.warning("Refused %r: its torrent held a program before", release.title)
             raise ProgramInTorrent(t(PROGRAM_IN_TORRENT_BEFORE))
 
-    async def _remember_refused(self, info_hash: str) -> None:
-        """Keep `info_hash` in `Settings.refused_hashes` (newest first). Never raises: a failure
-        only means the release is looked into again next time."""
+    async def remember_refused(self, info_hash: str) -> None:
+        """Keep `info_hash` in `Settings.refused_hashes` (newest first), so the release is never
+        sent again (the magnet guard's too). Never raises: a failure only means the release is
+        looked into again next time."""
         key = info_hash.casefold()
         kept = self._settings.current.refused_hashes
         try:
@@ -389,14 +431,16 @@ class DownloadService:
 
     async def _grab_to_folder(
         self, release: TorrentRelease, *, movie: bool
-    ) -> tuple[GrabResult, str, str | None]:
+    ) -> tuple[GrabResult, str, str | None, bool]:
         """Save the .torrent into the watch folder, or else send the magnet to the remote
         torrent program (when one is set up); a film (`movie`) into the films folder, or to the
         program's films destination, when Settings has one.
 
-        Returns (result, history saved_path, info hash).
+        Returns (result, history saved_path, info hash, whether a magnet went: as
+        `_grab_remote`).
         """
         content, magnet, info_hash = await self._obtain(release, _magnet_or_none(release.magnet))
+        magnet_sent = False
 
         if content is not None:
             path = await self._save(content, release.title, movie=movie)
@@ -425,7 +469,9 @@ class DownloadService:
                 outcome=GrabOutcome.SENT, message=t("Sent to {program}", program=saved_path)
             )
             log.info("Grabbed %r: magnet sent to %s", release.title, saved_path)
-        return result, saved_path, info_hash
+            info_hash = info_hash or magnet_hash(magnet)
+            magnet_sent = info_hash is not None
+        return result, saved_path, info_hash, magnet_sent
 
     async def _open(self, target: str, app: TorrentApp) -> None:
         """Hand a file path or magnet to its Windows handler. Never logs `target` (magnets)."""

@@ -8,6 +8,10 @@ setting (`remote_verify_tls`, for self-signed NAS certificates).
 Secret hygiene: passwords travel in POST bodies or an Authorization header only. Messages and
 log records name the program by host and port, never by URL, and no httpx exception (whose text
 may hold the URL) is chained to, or left as the context of, a RemoteError.
+
+Beside the Downloads page's protocols (RemoteStatusClient, RemoteTaskActions), RemoteTaskFiles is
+the magnet guard's (app/services/program_guard.py): a task's file names and its removal with
+what it downloaded.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import httpx
 
 from app import APP_NAME, __version__
 from app.i18n import N_, t
-from app.models import RemoteKind, RemoteStatus, Settings
+from app.models import RemoteKind, RemoteStatus, RemoteTask, Settings
 
 USER_AGENT = f"{APP_NAME}/{__version__}"
 # The Downloads page's status calls (`RemoteStatusClient`): a NAS that hangs is given up on
@@ -123,6 +127,34 @@ class RemoteTaskActions(Protocol):
     async def remove(self, task_ids: Collection[str]) -> None:
         """Remove these tasks from the program, keeping their files. A task that is gone
         already counts as removed. Raises RemoteError."""
+        ...
+
+
+class FilesUnknown(RemoteError):
+    """This program (or this version of it) can't tell AirGrabber a task's files at all, as
+    opposed to not knowing them yet (`RemoteTaskFiles.file_names` answering None)."""
+
+
+@runtime_checkable
+class RemoteTaskFiles(Protocol):
+    """A RemoteClient that can tell a task's files and remove a task with what it downloaded
+    (app/services/program_guard.py: a magnet that turns out to hold a program), on the status
+    calls' kept sign-in."""
+
+    @property
+    def kind(self) -> RemoteKind: ...
+
+    async def file_names(self, task: RemoteTask) -> tuple[str, ...] | None:
+        """The names of the files `task` (from `status`) holds, without their folders; None
+        while the program doesn't know them yet (a magnet still fetching its metadata) or no
+        longer has the task. Raises RemoteError (FilesUnknown: it never can)."""
+        ...
+
+    async def remove_with_files(self, task_ids: Collection[str]) -> bool:
+        """Remove these tasks and delete what they downloaded. True when the program deleted
+        everything, finished files too; False when a file it finished stays where the program
+        put it (Download Station: only an unfinished download goes with its task). A task that
+        is gone already counts as removed. Raises RemoteError."""
         ...
 
 
@@ -296,6 +328,11 @@ def magnet_hash(link: str) -> str | None:
             if found is not None:
                 return found
     return None
+
+
+def base_name(path: str) -> str:
+    """A file's name without its folders ("Show/Season 1/x.mkv" → "x.mkv"), either slash."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1].strip()
 
 
 def fraction(done: float | None, total: float | None) -> float:

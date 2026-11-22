@@ -19,7 +19,10 @@ from app.models import (
     AutoError,
     AutoGaveUp,
     AutoMovieGaveUp,
+    DownloadEntry,
+    DownloadRecord,
     LibraryStats,
+    MediaType,
     PairedPhone,
     PhoneContents,
     PhoneOrder,
@@ -32,6 +35,7 @@ from app.ui.forge_link import QuitGate, RequestPump, quits_after_forge
 from app.ui.settings_pages_registry import PAGE_LOOKS
 from app.i18n import t
 from app.update_guard import WentBack
+from app.services.program_guard import CaughtProgram
 from app.ui.main_window import (
     AutoNotice,
     MainWindow,
@@ -491,6 +495,63 @@ class FakeMailbox:
         self.takes += 1
         taken, self.waiting = self.waiting, []
         return taken
+
+
+class ProgramCaughtRoutingTests(unittest.TestCase):
+    """MainWindow._on_program_caught on a stand-in window (app/services/program_guard.py): told
+    in the tray and the status bar, and fetched again with the caught release left out."""
+
+    def window(self, *, tray_running: bool) -> Any:
+        notes: list[tuple[str, str]] = []
+        status: list[tuple[str, int]] = []
+        again: list[tuple[Any, bool, tuple[str, ...]]] = []
+        tray = SimpleNamespace(
+            running=tray_running, notify=lambda title, body: notes.append((title, body))
+        )
+        return SimpleNamespace(
+            tray=tray,
+            _report=lambda text, ms: status.append((text, ms)),
+            _download_entry_again=lambda entry, auto, avoid=(): again.append((entry, auto, avoid)),
+            notes=notes,
+            status=status,
+            again=again,
+        )
+
+    def caught(self, *, entry: bool, remains: bool) -> CaughtProgram:
+        record = DownloadRecord(
+            media_type=MediaType.TV,
+            media_id=1,
+            season=17,
+            episode=8,
+            release_title="Gold.Rush.S17E08",
+            source="prowlarr",
+        )
+        found = DownloadEntry(record=record, title="Gold Rush S17E08") if entry else None
+        return CaughtProgram(
+            title="Gold Rush S17E08",
+            file_name="Gold Rush S17E08.exe",
+            file_may_remain=remains,
+            entry=found,
+            avoid=("gold.rush.s17e08",),
+        )
+
+    def test_told_and_fetched_again(self) -> None:
+        window = self.window(tray_running=True)
+        caught = self.caught(entry=True, remains=False)
+        MainWindow._on_program_caught(window, caught)
+        body = "It was a program, not a video. AirGrabber is fetching another release."
+        self.assertEqual(window.notes, [("Removed Gold Rush S17E08", body)])
+        self.assertEqual(window.status, [(f"Removed Gold Rush S17E08. {body}", 60_000)])
+        self.assertEqual(window.again, [(caught.entry, True, ("gold.rush.s17e08",))])
+
+    def test_a_file_that_may_stay_is_named_and_nothing_to_fetch(self) -> None:
+        window = self.window(tray_running=False)
+        MainWindow._on_program_caught(window, self.caught(entry=False, remains=True))
+        self.assertEqual(window.notes, [])
+        [(text, _ms)] = window.status
+        self.assertIn("The file Gold Rush S17E08.exe may still be in your downloads folder", text)
+        self.assertNotIn("fetching", text)
+        self.assertEqual(window.again, [])
 
 
 class RequestPumpTests(unittest.IsolatedAsyncioTestCase):

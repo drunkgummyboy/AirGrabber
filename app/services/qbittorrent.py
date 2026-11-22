@@ -21,6 +21,10 @@ Protocol, per qBittorrent's "WebUI API" wiki (v4.1 – v5.x) and its source:
   `torrents/pause` / `torrents/resume`, used when the new name answers 404) and
   `torrents/delete` with `deleteFiles=false` (the files stay, finished or not), each with
   `hashes=a|b`, on the status calls' kept session.
+- the magnet guard (app/services/program_guard.py): `GET /api/v2/torrents/files?hash=` → a JSON
+  list of the torrent's files (`name`: its path inside the torrent), empty while a magnet still
+  fetches its metadata, HTTP 404 for a hash qBittorrent doesn't have; `torrents/delete` with
+  `deleteFiles=true` (`remove_with_files`: everything it downloaded goes too).
 
 Without a user name AirGrabber doesn't sign in (qBittorrent can skip sign-in for this network:
 "Bypass authentication for clients in whitelisted IP subnets"). Secret hygiene as in remote.py:
@@ -50,6 +54,7 @@ from app.services.remote import (
     HttpClients,
     ReleaseRefused,
     RemoteError,
+    base_name,
     byte_count,
     clamp_progress,
     destination,
@@ -183,6 +188,34 @@ class QBittorrentClient:
         """Remove these torrents with `deleteFiles=false`: everything they downloaded, finished
         or not, stays on the disk. qBittorrent answers 200 for a hash it doesn't know."""
         await self._act(("torrents/delete",), task_ids, {"deleteFiles": "false"})
+
+    async def file_names(self, task: RemoteTask) -> tuple[str, ...] | None:
+        """The torrent's files (`torrents/files`), on the kept session; None while a magnet
+        still fetches its metadata (an empty list) or qBittorrent doesn't have it (404)."""
+        task_id = task.task_id or task.info_hash
+        if not task_id:
+            return None
+        try:
+            response = await self._read("torrents/files", {"hash": task_id.lower()})
+        except _Refused as exc:
+            if exc.status == 404:
+                return None
+            raise
+        try:
+            payload = response.json()
+        except ValueError:  # JSONDecodeError and UnicodeDecodeError
+            payload = None
+        if not isinstance(payload, list):
+            raise RemoteError(_unexpected(response))
+        names = (item.get("name") for item in payload if isinstance(item, dict))
+        found = tuple(base_name(name) for name in names if isinstance(name, str) and name)
+        return found or None
+
+    async def remove_with_files(self, task_ids: Collection[str]) -> bool:
+        """Remove these torrents with `deleteFiles=true`: what they downloaded, finished or
+        not, is deleted too."""
+        await self._act(("torrents/delete",), task_ids, {"deleteFiles": "true"})
+        return True
 
     async def _act(
         self, paths: tuple[str, ...], task_ids: Collection[str], fields: Mapping[str, str]

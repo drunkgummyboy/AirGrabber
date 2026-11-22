@@ -19,7 +19,7 @@ from urllib.parse import parse_qsl, urlsplit
 import httpx
 
 from app.database import SettingsRepository
-from app.models import RemoteKind, Settings
+from app.models import DownloadState, RemoteKind, RemoteTask, Settings
 from app.services.qbittorrent import QBittorrentClient
 from app.services.remote import ReleaseRefused, RemoteError
 from app.services.settings import SettingsService
@@ -333,6 +333,69 @@ class ErrorTests(QBittorrentTestCase):
         for secret in (PASSWORD, SID, MAGNET):
             self.assertNotIn(secret, everything)
         self.assertGreaterEqual(len(messages), 2)
+
+
+# -- the magnet guard's file calls (app/services/program_guard.py) -------------------------------
+
+
+class FakeQBittorrentFiles(FakeQBittorrent):
+    """Adds torrents/files (`listed`: hash -> its files; a hash missing: 404) and
+    torrents/delete."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.listed: dict[str, list[dict[str, Any]]] = {}
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path.partition("/api/v2/")[2]
+        if path not in ("torrents/files", "torrents/delete"):
+            return super().__call__(request)
+        self.requests.append(request)
+        self.calls.append(path)
+        if request.headers.get("Cookie") != f"SID={SID}":
+            return httpx.Response(403, text="Forbidden")
+        if path == "torrents/delete":
+            self.forms[path] = dict(parse_qsl(request.content.decode()))
+            return httpx.Response(200)
+        found = self.listed.get(request.url.params.get("hash", ""))
+        if found is None:
+            return httpx.Response(404, text="Torrent hash was not found")
+        return httpx.Response(200, json=found)
+
+
+class TorrentFilesTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.server = FakeQBittorrentFiles()
+        self.settings = settings_service()
+        self.client = QBittorrentClient(self.settings, transport=httpx.MockTransport(self.server))
+
+    def task(self, info_hash: str = "a" * 40) -> RemoteTask:
+        return RemoteTask(
+            name="x", info_hash=info_hash, task_id=info_hash, state=DownloadState.WAITING
+        )
+
+    async def test_the_files_of_a_torrent(self) -> None:
+        self.server.listed["a" * 40] = [
+            {"name": "Gold Rush S17E08/Gold Rush S17E08.exe", "size": 4096, "progress": 0},
+            {"name": "Gold Rush S17E08/Sample.mkv", "size": 10, "progress": 0},
+        ]
+        names = await self.client.file_names(self.task())
+        self.assertEqual(names, ("Gold Rush S17E08.exe", "Sample.mkv"))
+        request = next(r for r in self.server.requests if r.url.path.endswith("torrents/files"))
+        self.assertEqual((request.method, request.url.params["hash"]), ("GET", "a" * 40))
+        self.assertNotIn(PASSWORD, str(request.url))
+
+    async def test_no_metadata_yet_or_gone_is_not_known(self) -> None:
+        self.server.listed["a" * 40] = []  # a magnet still fetching its metadata
+        self.assertIsNone(await self.client.file_names(self.task()))
+        self.assertIsNone(await self.client.file_names(self.task("b" * 40)))  # 404
+
+    async def test_remove_with_files_deletes_them(self) -> None:
+        self.assertTrue(await self.client.remove_with_files(["A" * 40]))
+        self.assertEqual(
+            self.server.forms["torrents/delete"], {"hashes": "a" * 40, "deleteFiles": "true"}
+        )
+        self.assertEqual(self.server.calls, ["auth/login", "torrents/delete"])
 
 
 if __name__ == "__main__":

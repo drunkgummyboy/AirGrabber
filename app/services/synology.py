@@ -35,6 +35,13 @@ until it completes) is deleted with the task; `force_complete=true` would move t
 files into the destination instead (guide, Task `delete`). The page says so before removing an
 unfinished task.
 
+The magnet guard (app/services/program_guard.py, `RemoteTaskFiles`) reads a task's files with Task
+`getinfo` (`id`, `additional=file`: each file's `filename`; the guide's SYNO.DownloadStation.Task,
+version 1), on the same kept sign-in. A task still fetching its metadata lists no files (and has
+no size yet). A NAS offering only DownloadStation2 isn't asked (no documented way to read a
+task's files there): `FilesUnknown`. `remove_with_files` is `remove`: Download Station's
+`delete` can't delete a finished file, only an unfinished task's partial download.
+
 Secret hygiene: the password and the sid only ever travel in POST bodies, messages and log
 records name the NAS by host and port only, a task's `uri` (which may hold a tracker passkey) is
 read for its hash or file name and then dropped, and no httpx exception is chained to (or left as
@@ -60,8 +67,10 @@ from app.services.remote import (
     CERTIFICATE_SETTING,
     STATUS_TIMEOUT,
     DiskSpace,
+    FilesUnknown,
     HttpClients,
     RemoteError,
+    base_name,
     byte_count,
     destination,
     epoch_time,
@@ -340,6 +349,31 @@ class DownloadStationClient:
         already counts as removed."""
         await self._act("delete", task_ids, {"force_complete": False})
 
+    async def file_names(self, task: RemoteTask) -> tuple[str, ...] | None:
+        """The files of `task` (Task `getinfo`, `additional=file`), on `status`'s kept sign-in;
+        None while it is still fetching its metadata (no files, no size) or is gone. A task
+        with a size but no file list (a single file, as some versions answer) is its title,
+        which Download Station sets to the torrent's name. FilesUnknown on a NAS with only
+        DownloadStation2."""
+        task_id = task.task_id
+        if not task_id:
+            return None
+        names = await self._on_kept_session(
+            lambda session: session.task_files(task_id), timeout=STATUS_TIMEOUT
+        )
+        if names is None:
+            return None
+        if not names and (task.size or 0) > 0 and task.name.strip():
+            return (base_name(task.name),)
+        return names or None
+
+    async def remove_with_files(self, task_ids: Collection[str]) -> bool:
+        """`remove`: Task `delete` has no "delete the files". An unfinished task's partial
+        download goes with it (`force_complete=false`); a file it finished stays in its
+        destination, so this answers False."""
+        await self.remove(task_ids)
+        return False
+
     async def _act(
         self, method: str, task_ids: Collection[str], extra: Mapping[str, object] | None = None
     ) -> None:
@@ -463,6 +497,38 @@ class _Session:
         else:  # DownloadStation2 takes the ids as a JSON list
             data = await self.call(_TASK2, 2, method, {"id": task_ids, **extra}, errors=errors)
         return _task_results(data)
+
+    async def task_files(self, task_id: str) -> tuple[str, ...] | None:
+        """The file names (without folders) Task `getinfo` gives for `task_id`; () when it
+        lists none yet, None when it doesn't have the task."""
+        if not (self.has(_TASK) and self.api(_TASK).supports(1)):
+            raise FilesUnknown(
+                t(
+                    "Download Station on {host} doesn't say which files a download holds.",
+                    host=self.host,
+                )
+            )
+        try:
+            data = await self.call(_TASK, 1, "getinfo", {"id": task_id, "additional": "file"})
+        except _ApiError as exc:
+            if exc.code == _INVALID_TASK:
+                return None
+            raise
+        raw = data.get("tasks", data.get("task")) if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            raise DownloadStationError(self._unexpected())
+        for item in raw:
+            if not isinstance(item, dict) or item.get("id") != task_id:
+                continue
+            additional = item.get("additional")
+            files = additional.get("file") if isinstance(additional, dict) else None
+            if not isinstance(files, list):
+                return ()
+            names = (
+                file.get("filename") for file in files if isinstance(file, dict)
+            )
+            return tuple(base_name(name) for name in names if isinstance(name, str) and name)
+        return None
 
     async def list_tasks(self) -> list[RemoteTask]:
         """Every Download Station task with its state and progress."""

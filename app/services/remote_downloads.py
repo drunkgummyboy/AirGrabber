@@ -4,7 +4,9 @@ sends every grab there, FOLDER the releases without a .torrent file.
 `client()` picks the client for `Settings.remote_kind` on every call, and each client reads the
 address and account from the settings on every operation, so a change in Settings applies at
 once. `status` / `free_space` are the Downloads page's read-only calls; `pause` / `resume` /
-`remove` its ⋯ menu's (by `RemoteTask.task_id`, files never deleted). The qBittorrent on this
+`remove` its ⋯ menu's (by `RemoteTask.task_id`, files never deleted). `file_names` /
+`remove_with_files` are the magnet guard's (app/services/program_guard.py): the one place a
+task's downloaded files are deleted, for a magnet that turned out to hold a program. The qBittorrent on this
 PC that AirGrabber set up is started when it isn't running (app/services/qbittorrent_local.py).
 """
 
@@ -16,7 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 import httpx
 
 from app.i18n import t
-from app.models import RemoteKind, RemoteStatus, Settings
+from app.models import RemoteKind, RemoteStatus, RemoteTask, Settings
 from app.services.qbittorrent import QBittorrentClient
 from app.services.qbittorrent_local import (
     LocalQBittorrent,
@@ -26,11 +28,13 @@ from app.services.qbittorrent_local import (
 )
 from app.services.remote import (
     DiskSpace,
+    FilesUnknown,
     HttpClients,
     RemoteClient,
     RemoteError,
     RemoteStatusClient,
     RemoteTaskActions,
+    RemoteTaskFiles,
 )
 from app.services.settings import SettingsService
 from app.services.synology import DownloadStationClient
@@ -147,6 +151,27 @@ class RemoteDownloads:
         """Remove these tasks from the program; their files stay (see each client). Raises
         RemoteError."""
         await self._actions().remove(task_ids)
+
+    async def file_names(self, task: RemoteTask) -> tuple[str, ...] | None:
+        """The files of `task` (from `status`); None while the program doesn't know them yet.
+        Raises RemoteError (FilesUnknown: this program can't tell)."""
+        return await self._files().file_names(task)
+
+    async def remove_with_files(self, task_ids: Collection[str]) -> bool:
+        """Remove these tasks with what they downloaded (see RemoteTaskFiles). Raises
+        RemoteError."""
+        return await self._files().remove_with_files(task_ids)
+
+    def _files(self) -> RemoteTaskFiles:
+        client = self.client()
+        if not isinstance(client, RemoteTaskFiles):
+            raise FilesUnknown(
+                t(
+                    "AirGrabber can't read the files of {program}'s downloads.",
+                    program=client.kind.program,
+                )
+            )
+        return client
 
     def _actions(self) -> RemoteTaskActions:
         client = self.client()

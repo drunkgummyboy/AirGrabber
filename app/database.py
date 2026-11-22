@@ -1820,6 +1820,14 @@ class HistoryRepository:
             )
             return cursor.rowcount
 
+    async def forget(self, history_id: int) -> bool:
+        """Delete one grab from the history (its Downloads page marks go with it: ON DELETE
+        CASCADE): a release the magnet guard caught holding a program (app/services/
+        program_guard.py) never counts as fetched. Returns whether there was such a grab."""
+        async with self._db.transaction() as conn:
+            cursor = await conn.execute("DELETE FROM download_history WHERE id = ?", (history_id,))
+            return cursor.rowcount > 0
+
     async def every_grab(self) -> list[DownloadRecord]:
         """The whole history, newest first (the Downloads page matches the torrent program's
         older tasks to it; it reads it again only when `stamp` changes)."""

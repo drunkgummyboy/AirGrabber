@@ -531,6 +531,17 @@ NL: dict[str, str] = {
         "Deze download bevat een programma ({suffix}) in plaats van alleen een video, dus hij is niet gestart.",
     "This download was caught holding a program instead of just a video before, so it wasn't started.":
         "Deze download bleek eerder een programma te bevatten in plaats van alleen een video, dus hij is niet gestart.",
+    # app/services/program_guard.py: a magnet's download that held a program, removed
+    "Removed {title}": "{title} verwijderd",
+    "It was a program, not a video.": "Het was een programma, geen video.",
+    "AirGrabber is fetching another release.": "AirGrabber haalt een andere release.",
+    "The file {name} may still be in your downloads folder: don't open it, delete it.":
+        "Het bestand {name} staat misschien nog in je downloadmap: open het niet, verwijder het.",
+    "A download": "Een download",
+    "Download Station on {host} doesn't say which files a download holds.":
+        "Download Station op {host} zegt niet welke bestanden een download bevat.",
+    "AirGrabber can't read the files of {program}'s downloads.":
+        "AirGrabber kan de bestanden van de downloads van {program} niet lezen.",
     "✓ In Plex": "✓ In Plex",
     "✓ Downloaded": "✓ Gedownload",
     "✓ downloaded": "✓ gedownload",
@@ -1624,6 +1635,12 @@ NL: dict[str, str] = {
         "Magnetlinks komen nu aan bij Download Station op een Synology-NAS.",
     "Library: a long title no longer makes its card taller than the others.":
         "Bibliotheek: een lange titel maakt zijn kaart niet meer hoger dan de andere.",
+    "Magnet downloads are now watched while they run, also on your NAS's torrent program.":
+        "Magnetdownloads worden nu in de gaten gehouden terwijl ze lopen, ook in het torrentprogramma op je NAS.",
+    "One that turns out to hold a program is removed with its files, and that release is never used again.":
+        "Blijkt er een programma in te zitten, dan wordt hij met zijn bestanden verwijderd en wordt die release nooit meer gebruikt.",
+    "AirGrabber then tells you, and fetches the episode or film again from another release.":
+        "AirGrabber laat het je dan weten en haalt de aflevering of film opnieuw op via een andere release.",
     "Player: Clearer voices (D), a brighter picture (L) and a sleep timer (T).":
         "Speler: Duidelijkere stemmen (D), een helderder beeld (L) en een slaaptimer (T).",
     "Player: media keys work, the taskbar preview has ⏮ ⏯ ⏭, and ? shows all the keys.":

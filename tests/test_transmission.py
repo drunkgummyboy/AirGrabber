@@ -19,7 +19,7 @@ from unittest import mock
 import httpx
 
 from app.database import SettingsRepository
-from app.models import RemoteKind, Settings
+from app.models import DownloadState, RemoteKind, RemoteTask, Settings
 from app.services.remote import ReleaseRefused, RemoteError
 from app.services.settings import SettingsService
 from app.services.transmission import TransmissionClient, rpc_url
@@ -249,6 +249,61 @@ class AddTests(TransmissionTestCase):
         for secret in (PASSWORD, MAGNET, base64.b64encode(f"beau:{PASSWORD}".encode()).decode()):
             self.assertNotIn(secret, everything)
         self.assertEqual(len(messages), 2)
+
+
+# -- the magnet guard's file calls (app/services/program_guard.py) -------------------------------
+
+
+class TorrentFilesTests(TransmissionTestCase):
+    def task(self) -> RemoteTask:
+        return RemoteTask(
+            name="x", info_hash="a" * 40, task_id="a" * 40, state=DownloadState.WAITING
+        )
+
+    def answer(self, torrents: list[dict[str, Any]]) -> None:
+        self.server.answers["torrent-get"] = lambda body: {
+            "arguments": {"torrents": torrents},
+            "result": "success",
+        }
+
+    async def test_the_files_of_a_torrent(self) -> None:
+        self.answer(
+            [
+                {
+                    "hashString": "a" * 40,
+                    "metadataPercentComplete": 1,
+                    "files": [
+                        {"name": "Gold Rush S17E08/Gold Rush S17E08.exe", "length": 4096},
+                        {"name": "Gold Rush S17E08/readme.txt", "length": 10},
+                    ],
+                }
+            ]
+        )
+        names = await self.client.file_names(self.task())
+        self.assertEqual(names, ("Gold Rush S17E08.exe", "readme.txt"))
+        body = self.server.bodies[-1]
+        self.assertEqual(body["method"], "torrent-get")
+        self.assertEqual(body["arguments"]["ids"], ["a" * 40])
+        self.assertIn("files", body["arguments"]["fields"])
+
+    async def test_no_metadata_yet_or_gone_is_not_known(self) -> None:
+        for torrents in (
+            [{"hashString": "a" * 40, "metadataPercentComplete": 0.3, "files": []}],
+            [{"hash_string": "a" * 40, "metadata_percent_complete": 0, "files": []}],
+            [{"hashString": "a" * 40, "metadataPercentComplete": 1, "files": []}],
+            [],
+        ):
+            self.answer(torrents)
+            self.assertIsNone(await self.client.file_names(self.task()))
+
+    async def test_remove_with_files_deletes_them(self) -> None:
+        self.server.answers["torrent-remove"] = lambda body: fixture("torrent_action.json")
+        self.assertTrue(await self.client.remove_with_files(["A" * 40]))
+        body = self.server.bodies[-1]
+        self.assertEqual(
+            (body["method"], body["arguments"]),
+            ("torrent-remove", {"ids": ["a" * 40], "delete-local-data": True}),
+        )
 
 
 if __name__ == "__main__":

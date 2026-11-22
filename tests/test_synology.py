@@ -18,9 +18,9 @@ from urllib.parse import parse_qsl
 import httpx
 
 from app.database import SettingsRepository
-from app.models import Settings
+from app.models import DownloadState, RemoteTask, Settings
 from app.services.settings import SettingsService
-from app.services.remote import RemoteError
+from app.services.remote import FilesUnknown, RemoteError
 from app.services.synology import DownloadStationClient, DownloadStationError
 from tests.multipart import parse_multipart
 
@@ -594,6 +594,74 @@ class SecretHygieneTests(SynologyTestCase):
         self.assertNotIn("/webapi", shown)  # no request URL, let alone its query parameters
         self.assertNotIn("api=", shown)
         self.assertNotIn(PASSWORD, repr(self.settings.current))
+
+
+# -- the magnet guard's file calls (app/services/program_guard.py) -------------------------------
+
+
+def getinfo(files: list[dict[str, Any]] | None, task_id: str = "dbid_7") -> httpx.Response:
+    """Task getinfo's answer (`additional=file`); `files` None: no `file` list at all."""
+    additional: dict[str, Any] = {} if files is None else {"file": files}
+    return ok({"tasks": [{"id": task_id, "title": "x", "additional": additional}]})
+
+
+class TaskFilesTests(SynologyTestCase):
+    def task(self, **changes: Any) -> RemoteTask:
+        values: dict[str, Any] = {
+            "name": "Gold Rush S17E08 [MeGusta]",
+            "task_id": "dbid_7",
+            "state": DownloadState.DOWNLOADING,
+        }
+        values.update(changes)
+        return RemoteTask(**values)
+
+    async def test_getinfo_with_the_files_on_the_kept_sign_in(self) -> None:
+        self.dsm.overrides[(TASK, "getinfo")] = lambda: getinfo(
+            [
+                {"filename": "Gold Rush S17E08/Gold Rush S17E08.exe", "size": 4096},
+                {"filename": "readme.txt", "size": 10},
+            ]
+        )
+        names = await self.client.file_names(self.task())
+        self.assertEqual(names, ("Gold Rush S17E08.exe", "readme.txt"))
+        form = self.dsm.form(TASK, "getinfo")
+        self.assertEqual(
+            (form["version"], form["id"], form["additional"], form["_sid"]),
+            ("1", "dbid_7", "file", SID),
+        )
+        await self.client.file_names(self.task())
+        self.assertEqual(
+            self.dsm.methods(), [(AUTH, "login"), (TASK, "getinfo"), (TASK, "getinfo")]
+        )
+        for request in self.dsm.requests:
+            self.assertNotIn(SID, str(request.url))
+
+    async def test_no_files_yet_is_not_known(self) -> None:
+        for answer in (getinfo([]), getinfo(None), ok({"tasks": []}), failure(404)):
+            self.dsm.overrides[(TASK, "getinfo")] = partial(lambda reply: reply, answer)
+            self.assertIsNone(await self.client.file_names(self.task(size=None)))
+
+    async def test_a_sized_task_without_a_file_list_is_its_title(self) -> None:
+        self.dsm.overrides[(TASK, "getinfo")] = lambda: getinfo([])
+        task = self.task(name="Gold Rush S17E08 [MeGusta].exe", size=4096)
+        self.assertEqual(await self.client.file_names(task), ("Gold Rush S17E08 [MeGusta].exe",))
+
+    async def test_only_downloadstation2_cant_tell(self) -> None:
+        info = api_info()
+        del info["data"][TASK]
+        self.dsm.info = info
+        with self.assertRaises(FilesUnknown) as caught:
+            await self.client.file_names(self.task())
+        self.assertEqual(
+            str(caught.exception),
+            f"Download Station on {HOST} doesn't say which files a download holds.",
+        )
+
+    async def test_remove_with_files_is_delete_and_a_finished_file_stays(self) -> None:
+        self.dsm.overrides[(TASK, "delete")] = lambda: ok([{"error": 0, "id": "dbid_7"}])
+        self.assertFalse(await self.client.remove_with_files(["dbid_7"]))
+        delete = self.dsm.form(TASK, "delete")
+        self.assertEqual((delete["id"], delete["force_complete"]), ("dbid_7", "false"))
 
 
 if __name__ == "__main__":

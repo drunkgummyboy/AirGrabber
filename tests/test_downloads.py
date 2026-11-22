@@ -1134,6 +1134,63 @@ class FilmsThroughTheClientsTests(DownloadTestCase):
         )
 
 
+class MagnetGuardHandOverTests(DownloadTestCase):
+    """Every magnet sent to the remote program goes to the magnet guard by its info hash
+    (`subscribe_magnets`, app/services/program_guard.py); a .torrent or APP mode never does."""
+
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.watched: list[str] = []
+        self.service.subscribe_magnets(self.watched.append)
+
+    async def test_remote_modes_magnet(self) -> None:
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+        await self.set_up_remote(RemoteKind.QBITTORRENT)
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual(self.watched, [HASH])
+        self.assertEqual((await self.history())[0].info_hash, HASH)  # in the history first
+
+    async def test_folder_modes_magnet_fallback(self) -> None:
+        await self.set_up_remote()
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual(self.watched, [HASH])
+
+    async def test_a_magnet_without_a_hash_on_the_release_gives_its_own(self) -> None:
+        await self.set_up_remote()
+        magnet = f"magnet:?xt=urn:btih:{OTHER_HASH.upper()}&dn=Original"
+        await self.service.grab(release(info_hash=None, magnet_uri=magnet), EPISODE)
+        self.assertEqual(self.watched, [OTHER_HASH])
+        self.assertEqual((await self.history())[0].info_hash, OTHER_HASH)
+
+    async def test_a_torrent_file_is_not_handed_over(self) -> None:
+        await self.settings.update(download_mode=DownloadMode.REMOTE)
+        client = await self.set_up_remote(RemoteKind.TRANSMISSION)
+        self.serve(ITORRENTS, CACHED)
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual((len(client.torrents), self.watched), (1, []))
+        await self.settings.update(download_mode=DownloadMode.FOLDER)
+        await self.service.grab(release(title="Again", info_hash=OTHER_HASH), EPISODE)
+        self.serve(OTHER_ITORRENTS, OTHER_TORRENT)
+        await self.service.grab(release(title="Saved", info_hash=OTHER_HASH), EPISODE)
+        self.assertEqual(self.watched, [OTHER_HASH])  # only the magnet of "Again"
+
+    async def test_app_mode_is_not_handed_over(self) -> None:
+        await self.settings.update(download_mode=DownloadMode.APP)
+        await self.service.grab(release(), EPISODE)
+        self.assertEqual((len(self.opened), self.watched), (1, []))
+
+    async def test_a_failing_listener_never_fails_the_grab(self) -> None:
+        def broken(info_hash: str) -> None:
+            raise RuntimeError("boom")
+
+        self.service.subscribe_magnets(broken)
+        await self.set_up_remote()
+        with self.assertLogs("app.services.downloads", logging.ERROR):
+            result = await self.service.grab(release(), EPISODE)
+        self.assertIs(result.outcome, GrabOutcome.SENT)
+        self.assertEqual(self.watched, [HASH])
+
+
 class WiringTests(unittest.IsolatedAsyncioTestCase):
     async def test_services_expose_downloads_and_the_station(self) -> None:
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -1152,6 +1209,8 @@ class WiringTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(services.remote.kind, RemoteKind.QBITTORRENT)  # a new install's
             self.assertEqual(services.downloads._torrent_cache, Path(tmp.name) / "torrents")
             self.assertIsInstance(services.torrent_app, TorrentAppService)
+            # The magnet guard hears every magnet sent to the remote program.
+            self.assertIn(services.program_guard.watch, services.downloads._magnet_listeners)
         finally:
             await services.aclose()
 
